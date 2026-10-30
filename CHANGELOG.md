@@ -35,6 +35,14 @@ API 在 1.0.0 之前仍可能微调。
 - 截断检测：报文超过 `recv_capacity` 时以 `NetErrc::datagram_truncated` 交付。
 - 组播：入组、跳数、环回开关。
 
+**串口**
+
+- `SerialPort`：打开串口异步读写，接口与 `Conn` 同构（拉模式读 + 队列写）。
+  基于 `asio::serial_port`，与 socket 共用同一个 `io_context`、同一套线程模型。
+- `drain()`：RS-485 方向控制用。Asio 没暴露 `tcdrain`，按波特率估算等待时间。
+- `serial_check` 示例：双向收发 + 256 字节对拷 + drain 自检。
+  Windows 用 com0com、Linux 用 socat/pty 都能跑。
+
 **端点定时**
 
 - `UdpEndpoint::set_timer` / `clear_timer`：每个端点一个定时回调，在**该端点的

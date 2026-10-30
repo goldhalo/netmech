@@ -30,7 +30,6 @@
   ============================================================================
 -->
 <Project DefaultTargets="Build" ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -49,7 +48,6 @@
       <Platform>x64</Platform>
     </ProjectConfiguration>
   </ItemGroup>
-
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>
     <ProjectGuid>{A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90}</ProjectGuid>
@@ -57,59 +55,49 @@
     <Keyword>Win32Proj</Keyword>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
-
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
-
   <!-- ======================================================================
        配置属性
        ====================================================================== -->
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>StaticLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v142</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
-
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-
   <ImportGroup Label="ExtensionSettings">
   </ImportGroup>
-
   <ImportGroup Label="Shared">
   </ImportGroup>
-
   <ImportGroup Label="PropertySheets">
-    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
-            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
-            Label="LocalAppDataPlatform" />
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
-
   <PropertyGroup Label="UserMacros">
     <!-- 输出根目录：与 CMake 的布局保持一致（src/wtoe/NetMechanism/build/bin） -->
     <NetmechOutRoot Condition="'$(NetmechOutRoot)'==''">$(MSBuildThisFileDirectory)build\bin</NetmechOutRoot>
     <NetmechIntRoot Condition="'$(NetmechIntRoot)'==''">$(MSBuildThisFileDirectory)build\obj</NetmechIntRoot>
   </PropertyGroup>
-
   <PropertyGroup>
     <OutDir>$(NetmechOutRoot)\$(Configuration)\</OutDir>
     <IntDir>$(NetmechIntRoot)\$(Platform)\$(Configuration)\</IntDir>
@@ -117,7 +105,6 @@
     <LinkIncremental Condition="'$(Configuration)'=='Debug'">true</LinkIncremental>
     <LinkIncremental Condition="'$(Configuration)'=='Release'">false</LinkIncremental>
   </PropertyGroup>
-
   <!-- ======================================================================
        编译 / 链接选项
        ====================================================================== -->
@@ -137,9 +124,7 @@
       <ConformanceMode>true</ConformanceMode>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-
       <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-
       <PreprocessorDefinitions>
         WIN32_LEAN_AND_MEAN;
         NOMINMAX;
@@ -152,7 +137,6 @@
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Lib>
   </ItemDefinitionGroup>
-
   <!-- Debug：/MDd（动态 CRT，调试版） -->
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -170,7 +154,6 @@
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
     </ClCompile>
   </ItemDefinitionGroup>
-
   <!-- Release：/MD（动态 CRT） -->
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -192,11 +175,10 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
     </ClCompile>
   </ItemDefinitionGroup>
-
   <!-- ======================================================================
        源文件
        ====================================================================== -->
-    <ItemGroup Label="Sources">
+  <ItemGroup Label="Sources">
     <ClCompile Include="src\acceptor.cpp" />
     <ClCompile Include="src\address.cpp" />
     <ClCompile Include="src\conn.cpp" />
@@ -207,8 +189,7 @@
     <ClCompile Include="src\timer.cpp" />
     <ClCompile Include="src\udp_endpoint.cpp" />
   </ItemGroup>
-
-    <ItemGroup Label="PrivateHeaders">
+  <ItemGroup Label="PrivateHeaders">
     <ClInclude Include="src\acceptor.hpp" />
     <ClInclude Include="src\address_internal.hpp" />
     <ClInclude Include="src\conn_state.hpp" />
@@ -218,8 +199,7 @@
     <ClInclude Include="src\registry.hpp" />
     <ClInclude Include="src\timer.hpp" />
   </ItemGroup>
-
-    <ItemGroup Label="PublicHeaders">
+  <ItemGroup Label="PublicHeaders">
     <ClInclude Include="include\netmech\common.hpp" />
     <ClInclude Include="include\netmech\conn.hpp" />
     <ClInclude Include="include\netmech\iohandler.hpp" />
@@ -228,16 +208,12 @@
     <ClInclude Include="include\netmech\net.hpp" />
     <ClInclude Include="include\netmech\udp.hpp" />
   </ItemGroup>
-
   <ItemGroup Label="Docs">
     <None Include="README.md" />
     <None Include="CMakeLists.txt" />
     <None Include="build_and_test.ps1" />
   </ItemGroup>
-
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
-
 </Project>

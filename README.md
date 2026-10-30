@@ -133,6 +133,76 @@ bool on_open(std::shared_ptr<Conn> ep) override {
 
 ---
 
+## 串口
+
+Asio 的 `serial_port` 内部已处理平台差异（Windows 用 WaitCommEvent、Linux 用 termios），
+所以串口和 socket 一样挂在同一个 `io_context` 上——**线程模型完全一致**。
+
+```cpp
+#include <netmech/net.hpp>
+
+class Sink : public netmech::SerialHandler {
+public:
+    void on_read(std::error_code ec, netmech::Buf buf, std::size_t n) override {
+        if (ec) { return; }
+        handle(static_cast<std::uint8_t*>(buf.data), n);
+        port->read(netmech::Buf{nullptr, chunk, sizeof(chunk)});   // 继续读
+    }
+    netmech::SerialPort* port = nullptr;
+    std::uint8_t chunk[1024];
+};
+
+netmech::SerialConfig cfg;
+cfg.device    = "COM5";      // 或 "/dev/ttyUSB0"
+cfg.baud_rate = 9600;
+cfg.data_bits = 8;
+
+std::error_code ec;
+auto port = netmech::SerialPort::create(cfg, sink, ec);
+port->read(netmech::Buf{nullptr, buf, sizeof(buf)});
+port->write(netmech::ConstBuf{nullptr, data, len});
+```
+
+和 `Conn` 的接口刻意保持一致（拉模式读 + 队列写），区别只有两点：
+
+| | `Conn` | `SerialPort` |
+|---|---|---|
+| 地址 | `local_address()` / `remote_address()` | 没有（串口是点对点） |
+| 保活 | `enable_recv_keepalive` | 没有（拔线只会读到错误，没有 FIN） |
+
+**串口是纯字节流，没有报文边界**。`on_read` 告诉你"当前读到多少"，
+可能是半个帧、也可能几帧粘一起。帧边界（Modbus RTU 的 3.5 字符静默）由上层判断。
+
+### `drain()`
+
+RS-485 半双工发完要"等最后一个字节真正移出"才能放开方向控制。`on_write`
+只代表"进了内核缓冲"，不等于"发出去了"。
+
+Asio **没有暴露 `tcdrain` / `FlushFileBuffers`**，所以 `drain()` 是按波特率**估算**的：
+
+```cpp
+// 9600bps、8N1 → 10 bit/字符 → 1.04ms → 等 2ms
+```
+
+对 USB 转 485（转换器自动控制方向）够用；要精确就在应用层调平台的 `tcdrain`。
+
+**它是阻塞调用，不要在 io 线程里调。**
+
+### 验证
+
+```bash
+# Windows（com0com 建一对）
+./serial_check.exe COM5 COM6 9600
+
+# Linux（socat 建一对 pty）
+socat pty,raw,echo=0,link=/tmp/ttyV0 pty,raw,echo=0,link=/tmp/ttyV1 &
+./serial_check /tmp/ttyV0 /tmp/ttyV1 9600
+```
+
+做双向收发 + 256 字节对拷 + drain，退出码 0 表示全通过。
+
+---
+
 ## 构建
 
 ### Windows（MSVC）

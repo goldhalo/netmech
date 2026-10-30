@@ -60,6 +60,7 @@
 #include "netmech/linkable.hpp"
 #include "netmech/iohandler.hpp"
 #include "netmech/udp.hpp"
+#include "netmech/serial.hpp"
 
 // 具体类型
 #include "netmech/conn.hpp"

@@ -250,6 +250,13 @@ if(NETMECH_BUILD_EXAMPLES)
         add_executable(netmech_echo example/echo_main.cpp)
         set_target_properties(netmech_echo PROPERTIES FOLDER "NetMechanism/example")
         target_link_libraries(netmech_echo PRIVATE NetMechanism)
+
+    # 串口自检（Windows 的 com0com / Linux 的 pty 都能用）
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example/serial_check.cpp")
+        add_executable(serial_check example/serial_check.cpp)
+        set_target_properties(serial_check PROPERTIES FOLDER "NetMechanism/example")
+        target_link_libraries(serial_check PRIVATE NetMechanism)
+    endif()
     endif()
 
     if(EXISTS "${NETMECH_INCLUDE_DIR}/netmech/udp.hpp"
