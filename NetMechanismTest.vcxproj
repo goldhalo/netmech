@@ -170,20 +170,17 @@
     </Link>
   </ItemDefinitionGroup>
 
-  <ItemGroup Label="TestSources">
-    <ClCompile Include="test\test_main.cpp" />
-    <ClCompile Include="test\test_backpressure.cpp" />
-    <ClCompile Include="test\test_close.cpp" />
-    <ClCompile Include="test\test_concurrent_write.cpp" />
-    <ClCompile Include="test\test_connect_listen.cpp" />
-    <ClCompile Include="test\test_echo.cpp" />
-    <ClCompile Include="test\test_endpoint_lifetime.cpp" />
-    <ClCompile Include="test\test_keepalive.cpp" />
+    <ItemGroup Label="TestSources">
+    <ClCompile Include="test\test_address.cpp" />
+    <ClCompile Include="test\test_conn_basic.cpp" />
+    <ClCompile Include="test\test_conn_flow.cpp" />
+    <ClCompile Include="test\test_conn_lifetime.cpp" />
+    <ClCompile Include="test\test_conn_regress.cpp" />
+    <ClCompile Include="test\test_conn_write.cpp" />
     <ClCompile Include="test\test_lifecycle.cpp" />
-    <ClCompile Include="test\test_protocol_abstraction.cpp" />
-    <ClCompile Include="test\test_udp_channel.cpp" />
-    <ClCompile Include="test\test_udp_integration.cpp" />
-    <ClCompile Include="test\test_udp_session.cpp" />
+    <ClCompile Include="test\test_main.cpp" />
+    <ClCompile Include="test\test_udp_endpoint.cpp" />
+    <ClCompile Include="test\test_udp_timer.cpp" />
   </ItemGroup>
 
   <ItemGroup Label="TestHeaders">

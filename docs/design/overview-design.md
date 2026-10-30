@@ -243,6 +243,10 @@ write(buf)
 | 3 | UDP：新 `UdpEndpoint` 落地（推送式接收、`send_to`、`last_peer`/`on_peer_changed`、截断、组播） | 75 用例 / 2023 断言全绿（新增 3 个 UDP 用例） | ✅ |
 | 4a | 清理：删旧 UDP 两套 API + 2 个实现 + 4 个测试；`IoPool` 移入 `src/`；`error`/`fwd`/`buffer`/`keepalive`/`protocol_traits` 全部收敛（公共头 14 → 7） | 32 用例 / 342 断言全绿（用例数下降是删掉了已不存在功能的旧测试） | ✅ |
 | 4b | 更新 `example/`（TCP echo + UDP echo）到新接口；CMakeLists 的构建条件修正 | 两个示例实跑通过（全链路日志核对） | ✅ |
+| 5  | 补齐回归与新增能力：`Timer`（端点级定时）、`find_free_port_run`、`create_udp_endpoint_on`、SSRC 冲突/端口占用/协商流程的用例 | **46 用例 / 604 断言全绿**；Windows + Linux + aarch64 三平台零警告 | ✅ |
+
+> 上表每一步的用例数是**当时的快照**（删旧测试时会下降），最终状态见
+> [README](../../README.md) 与 [CHANGELOG](../../CHANGELOG.md)。
 
 ---
 

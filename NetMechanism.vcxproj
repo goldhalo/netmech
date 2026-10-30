@@ -196,37 +196,37 @@
   <!-- ======================================================================
        源文件
        ====================================================================== -->
-  <ItemGroup Label="Sources">
+    <ItemGroup Label="Sources">
     <ClCompile Include="src\acceptor.cpp" />
-    <ClCompile Include="src\datagram_receiver.cpp" />
-    <ClCompile Include="src\endpoint.cpp" />
+    <ClCompile Include="src\address.cpp" />
+    <ClCompile Include="src\conn.cpp" />
     <ClCompile Include="src\error.cpp" />
     <ClCompile Include="src\io_pool.cpp" />
     <ClCompile Include="src\mechanism.cpp" />
-    <ClCompile Include="src\udp_channel.cpp" />
+    <ClCompile Include="src\runtime.cpp" />
+    <ClCompile Include="src\timer.cpp" />
+    <ClCompile Include="src\udp_endpoint.cpp" />
   </ItemGroup>
 
-  <ItemGroup Label="PrivateHeaders">
+    <ItemGroup Label="PrivateHeaders">
     <ClInclude Include="src\acceptor.hpp" />
-    <ClInclude Include="src\endpoint_state.hpp" />
+    <ClInclude Include="src\address_internal.hpp" />
+    <ClInclude Include="src\conn_state.hpp" />
+    <ClInclude Include="src\io_pool.hpp" />
     <ClInclude Include="src\netmech_srcpch.hpp" />
+    <ClInclude Include="src\protocol_traits.hpp" />
     <ClInclude Include="src\registry.hpp" />
+    <ClInclude Include="src\timer.hpp" />
   </ItemGroup>
 
-  <ItemGroup Label="PublicHeaders">
-    <ClInclude Include="include\netmech\net.hpp" />
-    <ClInclude Include="include\netmech\fwd.hpp" />
-    <ClInclude Include="include\netmech\error.hpp" />
-    <ClInclude Include="include\netmech\buffer.hpp" />
-    <ClInclude Include="include\netmech\executor.hpp" />
-    <ClInclude Include="include\netmech\protocol_traits.hpp" />
-    <ClInclude Include="include\netmech\keepalive.hpp" />
-    <ClInclude Include="include\netmech\linkable.hpp" />
+    <ItemGroup Label="PublicHeaders">
+    <ClInclude Include="include\netmech\common.hpp" />
+    <ClInclude Include="include\netmech\conn.hpp" />
     <ClInclude Include="include\netmech\iohandler.hpp" />
-    <ClInclude Include="include\netmech\endpoint.hpp" />
+    <ClInclude Include="include\netmech\linkable.hpp" />
     <ClInclude Include="include\netmech\mechanism.hpp" />
-    <ClInclude Include="include\netmech\datagram_channel.hpp" />
-    <ClInclude Include="include\netmech\datagram_session.hpp" />
+    <ClInclude Include="include\netmech\net.hpp" />
+    <ClInclude Include="include\netmech\udp.hpp" />
   </ItemGroup>
 
   <ItemGroup Label="Docs">

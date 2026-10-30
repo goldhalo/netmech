@@ -57,7 +57,7 @@ sudo apt install -y build-essential cmake      # 一次性
    `/W4`（MSVC）和 `-Wall -Wextra`（GCC）之外不加任何抑制。
    确实需要抑制的第三方头警告，用**定向** `#pragma` 并在旁边写清原因。
 
-2. **单元测试全绿**（当前 38 用例 / 566 断言）
+2. **单元测试全绿**（当前 46 用例 / 604 断言）
 
 3. **改了公共接口 → 同步更新** `docs/API.md` 与 `README.md` 的示例
 
