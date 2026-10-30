@@ -15,6 +15,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetmechEcho", "NetmechEcho.
 	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetmechUdp", "NetmechUdp.vcxproj", "{D1A6F4B5-7EB0-4C9D-AF51-4A8EBD6CA132}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetmechSerial", "NetmechSerial.vcxproj", "{6B40725E-5630-4532-982E-8A271BDC38A2}"
 	ProjectSection(ProjectDependencies) = postProject
 		{A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90} = {A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90}
 	EndProjectSection
@@ -59,6 +60,10 @@ Global
 		{D1A6F4B5-7EB0-4C9D-AF51-4A8EBD6CA132}.Release|x64.Build.0 = Release|x64
 		{D1A6F4B5-7EB0-4C9D-AF51-4A8EBD6CA132}.Release|x86.ActiveCfg = Release|Win32
 		{D1A6F4B5-7EB0-4C9D-AF51-4A8EBD6CA132}.Release|x86.Build.0 = Release|Win32
+		{6B40725E-5630-4532-982E-8A271BDC38A2}.Debug|x64.ActiveCfg = Debug|x64
+		{6B40725E-5630-4532-982E-8A271BDC38A2}.Debug|x64.Build.0 = Debug|x64
+		{6B40725E-5630-4532-982E-8A271BDC38A2}.Release|x64.ActiveCfg = Release|x64
+		{6B40725E-5630-4532-982E-8A271BDC38A2}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

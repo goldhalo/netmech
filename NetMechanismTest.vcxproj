@@ -155,7 +155,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
     </Link>
   </ItemDefinitionGroup>
-  <ItemGroup Label="TestSources">
+    <ItemGroup Label="TestSources">
     <ClCompile Include="test\test_address.cpp" />
     <ClCompile Include="test\test_conn_basic.cpp" />
     <ClCompile Include="test\test_conn_flow.cpp" />
@@ -164,6 +164,7 @@
     <ClCompile Include="test\test_conn_write.cpp" />
     <ClCompile Include="test\test_lifecycle.cpp" />
     <ClCompile Include="test\test_main.cpp" />
+    <ClCompile Include="test\test_serial.cpp" />
     <ClCompile Include="test\test_udp_endpoint.cpp" />
     <ClCompile Include="test\test_udp_timer.cpp" />
   </ItemGroup>
