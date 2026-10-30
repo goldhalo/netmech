@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Linux / GCC + Clang
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Linux / ${{ matrix.compiler }} / ${{ matrix.build_type }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装编译器
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            sudo apt-get install -y g++
+          else
+            sudo apt-get install -y clang++
+          fi
+
+      - name: 配置
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc" ]; then
+            export CC=gcc CXX=g++
+          else
+            export CC=clang CXX=clang++
+          fi
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+                -DNETMECH_WARNINGS_AS_ERRORS=ON
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure
+
+      - name: 直接运行测试（获取详细输出）
+        if: failure()
+        run: ./build/bin/netmech_ut --verbose || true
+
+  # ---------------------------------------------------------------------------
+  # Windows / MSVC
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows / MSVC / ${{ matrix.build_type }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+                -DNETMECH_WARNINGS_AS_ERRORS=ON
+
+      - name: 构建
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: 测试
+        run: |
+          & ".\build\bin\${{ matrix.build_type }}\netmech_ut.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        shell: pwsh
+
+  # ---------------------------------------------------------------------------
+  # 质量门禁
+  # ---------------------------------------------------------------------------
+  quality:
+    name: 质量检查
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查禁止的 C++20 特性
+        run: |
+          echo "检查源码中是否出现 C++20 构造..."
+          FAIL=0
+          for pat in 'co_await' 'co_return' 'co_yield' 'std::span' 'std::format' \
+                     'std::jthread' 'std::atomic_ref' '\bconcept\b' '\branges::' '<=>'; do
+            if grep -rEn "$pat" include/ src/ example/ test/ --include='*.hpp' --include='*.cpp' 2>/dev/null; then
+              echo "❌ 发现禁止的构造: $pat"
+              FAIL=1
+            fi
+          done
+          if [ $FAIL -eq 1 ]; then exit 1; fi
+          echo "✅ 未发现 C++20 构造"
+
+      - name: 检查不得引入 Boost 依赖
+        run: |
+          if grep -rn 'boost::' include/ src/ example/ test/ \
+               --include='*.hpp' --include='*.cpp' | grep -v '^\s*//' | grep -v '注释'; then
+            echo "❌ 发现 boost:: 引用（本项目不依赖 Boost）"
+            exit 1
+          fi
+          echo "✅ 无 Boost 依赖"
+
+      - name: 检查 thirdparty 完整性
+        run: |
+          if [ ! -f thirdparty/asio/include/asio.hpp ]; then
+            echo "❌ 缺少 thirdparty/asio/include/asio.hpp"
+            exit 1
+          fi
+          if [ ! -f thirdparty/asio/LICENSE_1_0.txt ]; then
+            echo "❌ 缺少 Asio 许可证文件（Boost License 要求保留）"
+            exit 1
+          fi
+          echo "✅ thirdparty 完整"

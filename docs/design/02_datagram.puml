@@ -1,0 +1,193 @@
+@startuml netmech_datagram
+' NetMechanism · UDP 数据报子系统
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 12
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam nodesep 26
+skinparam ranksep 40
+skinparam ArrowColor #5B6B7B
+skinparam ClassBorderColor #7A8B9A
+skinparam ClassBackgroundColor #F7F9FB
+skinparam ClassHeaderBackgroundColor #E8EEF4
+skinparam AbstractClassBackgroundColor #EFF6EC
+skinparam AbstractClassBorderColor #6E9C5A
+
+title NetMechanism · UDP 数据报子系统\n<size:11>无连接通道 UdpChannel + 有会话的 DatagramReceiver/DatagramSession 两套 API</size>
+
+' ============ 公共契约 ============
+abstract class IDatagramChannel <<interface>> {
+    +{abstract} async_receive(buf, h) : bool
+    +{abstract} async_send(buf, peer, h) : bool
+    +{abstract} has_default_peer() : bool
+    +{abstract} default_peer() : endpoint_type
+    +{abstract} local_address() : endpoint_type
+    +{abstract} set_send_queue_limit(bytes, count) : void
+    +{abstract} close() : void
+}
+
+abstract class IDatagramSession <<interface>> {
+    +{abstract} async_receive(buf, h) : bool
+    +{abstract} async_send(buf, h) : bool
+    +{abstract} id() : session_id_t
+    +{abstract} peer() : endpoint_type
+    +{abstract} last_activity() : time_point
+    +{abstract} enable_recv_keepalive(interval, max_miss) : void
+    +{abstract} set_send_queue_limit(bytes, count) : void
+    +{abstract} close() : void
+}
+
+abstract class IDatagramReceiver <<interface>> {
+    +{static} make_datagram_receiver(cfg, handler, ec) : shared_ptr<IDatagramReceiver>
+    +{abstract} local_address() : endpoint_type
+    +{abstract} find_session(id) : shared_ptr<IDatagramSession>
+    +{abstract} find_session_by_peer(peer) : shared_ptr<IDatagramSession>
+    +{abstract} session_count() : size_t
+    +{abstract} close_session(peer) : void
+    +{abstract} close() : void
+}
+
+abstract class SessionHandler <<interface>> {
+    +{abstract} on_session_open(session) : bool
+    +{abstract} on_session_timeout(session) : bool
+    +{abstract} on_session_close(session) : void
+}
+
+class ReceiverConfig <<struct>> {
+    +local : udp::endpoint
+    +socket_buf_size : size_t
+    +max_sessions : size_t
+    +idle_check_interval : ms
+    +idle_timeout : ms
+    +session_send_queue_bytes : size_t
+    +session_send_queue_count : size_t
+}
+
+class DatagramConfig <<struct>> {
+    +socket_buf_size : size_t
+    +send_queue_bytes / count : size_t
+    +allow_broadcast : bool
+    +reuse_address : bool
+    +multicast_group : optional<address>
+    +multicast_interface : optional<address>
+    +multicast_hops : uint8_t
+    +multicast_loopback : bool
+}
+
+' ============ 无连接通道实现 ============
+class UdpChannel {
+    +async_receive(buf, h) : bool
+    +async_send(buf, peer, h) : bool
+    +has_default_peer() : bool
+    +set_send_queue_limit(bytes, count) : void
+    +close() : void
+    -pump_send() : void
+    -do_receive() : void
+}
+
+class SendQueue <<struct>> {
+    +pending : deque<Request>
+    +in_flight : bool
+    +push(Request) : void
+    +drain() : deque<Request>
+}
+
+class PendingRecv <<struct>> {
+    +buffer : mutable_buffer
+    +handler : ReceiveHandler
+    +active : bool
+}
+
+' ============ 会话式接收实现 ============
+class DatagramReceiver {
+    +find_session(id) : shared_ptr<IDatagramSession>
+    +find_session_by_peer(peer) : shared_ptr<IDatagramSession>
+    +session_count() : size_t
+    +close_session(peer) : void
+    +close() : void
+    -do_receive() : void
+    -on_datagram(ec, n, from) : void
+    -sweep_idle_sessions() : void
+}
+
+class ReceiverCore <<struct>> {
+    +sock : shared_ptr<udp::socket>
+    +cfg : ReceiverConfig
+    +sessions_by_id : map<session_id_t, shared_ptr<DatagramSession>>
+    +sessions_by_peer : map<endpoint_t, session_id_t>
+}
+
+class DatagramSession {
+    +async_receive(buf, h) : bool
+    +async_send(buf, h) : bool
+    +id() : session_id_t
+    +last_activity() : time_point
+    +enable_recv_keepalive(interval, max_miss) : void
+    +close() : void
+    -pump_send() : void
+}
+
+class SessionCore <<struct>> {
+    +socket : shared_ptr<udp::socket>
+    +peer : const endpoint_t
+    +local : const endpoint_t
+    +send_q : SessionSendQueue
+    +ka : SessionKeepAlive
+    +limit_bytes / limit_count : size_t
+}
+
+class SessionSendQueue <<struct>> {
+    +pending : deque<Request>
+    +in_flight : bool
+    +push(Request) : void
+    +drain() : deque<Request>
+}
+
+class SessionKeepAlive <<struct>> {
+    +timer : unique_ptr<timer_t>
+    +interval : ms
+    +max_miss : uint32_t
+    +miss : uint32_t
+    +enabled : bool
+    +got_data : atomic<bool>
+}
+
+' ============ 继承 ============
+IDatagramChannel <|-- UdpChannel
+IDatagramSession <|-- DatagramSession
+IDatagramReceiver <|-- DatagramReceiver
+
+' ============ 通道内部 ============
+UdpChannel *-- SendQueue : send_q_
+UdpChannel *-- PendingRecv : recv_
+UdpChannel ..> DatagramConfig : cfg_
+
+' ============ 接收器内部 ============
+DatagramReceiver *-- ReceiverCore : core_
+DatagramReceiver o-- SessionHandler : handler
+DatagramReceiver ..> ReceiverConfig : cfg
+DatagramReceiver ..> DatagramSession : 首包建会话
+IDatagramReceiver ..> IDatagramSession : 返回
+
+' ============ 会话内部 ============
+DatagramSession *-- SessionCore : core_
+SessionCore *-- SessionSendQueue : send_q
+SessionCore *-- SessionKeepAlive : ka
+SessionCore --> udp::socket : 共享 socket
+ReceiverCore ..> DatagramSession : 按 peer 路由
+DatagramSession ..> DatagramReceiver : 关闭通知(摘表)
+
+note right of DatagramReceiver
+  首包建会话 → on_session_open
+  空闲超时 → on_session_timeout
+  关闭/超时 → on_session_close
+  三处回调均由 SessionHandler 决定是否保留
+end note
+
+note bottom of DatagramSession
+  会话与 Receiver 共享同一个 socket：
+  用 peer 做多路分解，1 socket 承载 N 会话。
+end note
+
+@enduml

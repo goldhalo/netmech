@@ -1,0 +1,525 @@
+@startuml
+
+
+
+
+
+/' Objects '/
+
+namespace std {
+	class is_error_code_enumnetmech::NetErrc <template<>> {
+	}
+}
+
+
+namespace netmech {
+	class Acceptor {
+		+Acceptor(std::shared_ptr<IoPool> pool, function<bool ( socket_t&& sock, const endpoint_t& remote, const endpoint_t& local )> deliver)
+		+~Acceptor()
+		-acceptor_ : asio::ip::tcp::acceptor
+		+socket() : asio::ip::tcp::acceptor&
+		+is_backoff() : bool {query}
+		+is_open() : bool {query}
+		-opened_ : bool
+		-reopen_acceptor() : bool
+		-stopping_ : bool
+		-bound_local_ : endpoint_t
+		-local_ : endpoint_t
+		+local_address() : endpoint_t {query}
+		+open(const endpoint_t& local, std::uint32_t backlog) : error_code_t
+		-open_error_ : error_code_t
+		-deliver_ : function<bool ( socket_t&& sock, const endpoint_t& remote, const endpoint_t& local )>
+		-ioc_ : io_context_t&
+		-mutex_ : mutable std::mutex
+		-pending_socket_ : socket_t
+		-backoff_ : std::atomic<bool>
+		-retry_attempts_ : std::atomic<std::uint32_t>
+		-retry_errors_ : std::atomic<std::uint32_t>
+		-pool_ : std::shared_ptr<IoPool>
+		-backlog_ : std::uint32_t
+		+retry_count() : std::uint32_t {query}
+		-retry_timer_ : timer_t
+		+close() : void
+		-close_impl() : void
+		-configure_socket(socket_t& sock) : void
+		-do_accept() : void
+		-handle_accept(const error_code_t& ec) : void
+		-schedule_reopen(const error_code_t& ec) : void
+	}
+
+	class Endpoint {
+		-Endpoint(std::shared_ptr<Impl> impl)
+		+~Endpoint()
+		+async_read_exact(mutable_buffer buf, ReadHandler h) : bool
+		+async_read_some(mutable_buffer buf, ReadHandler h) : bool
+		+async_write(const_buffer buf, WriteHandler h) : bool
+		+is_open() : bool {query}
+		-m_impl : std::shared_ptr<Impl>
+		+id() : std::uint32_t {query}
+		+local_address() : tcp::endpoint {query}
+		+remote_address() : tcp::endpoint {query}
+		+close() : void
+		+disable_recv_keepalive() : void
+		+disable_send_keepalive() : void
+		+enable_recv_keepalive(std::chrono::milliseconds delay, std::chrono::milliseconds interval, std::uint32_t max_miss) : void
+		+enable_send_keepalive(std::chrono::milliseconds delay, std::chrono::milliseconds interval) : void
+		+set_send_queue_limit(std::size_t bytes, std::size_t count) : void
+	}
+
+	abstract class IDatagramChannel {
+		+~IDatagramChannel()
+		+{abstract} async_receive(asio::mutable_buffer buf, function<void ( std::error_code ec, std::size_t n, const asio::ip::udp::endpoint& from )> h) : bool
+		+{abstract} async_send(asio::const_buffer buf, endpoint peer, function<void ( std::error_code ec, std::size_t n )> h) : bool
+		+{abstract} has_default_peer() : bool {query}
+		+{abstract} is_open() : bool {query}
+		+{abstract} default_peer() : endpoint_type {query}
+		+{abstract} local_address() : endpoint_type {query}
+		+{abstract} close() : void
+		+{abstract} set_send_queue_limit(std::size_t bytes, std::size_t count) : void
+	}
+
+	abstract class IDatagramSession {
+		+~IDatagramSession()
+		+{abstract} async_receive(asio::mutable_buffer buf, function<void ( std::error_code ec, std::size_t n )> h) : bool
+		+{abstract} async_send(asio::const_buffer buf, function<void ( std::error_code ec, std::size_t n )> h) : bool
+		+{abstract} is_open() : bool {query}
+		+{abstract} local() : endpoint_type {query}
+		+{abstract} peer() : endpoint_type {query}
+		+{abstract} id() : session_id_t {query}
+		+{abstract} last_activity() : std::chrono::steady_clock::time_point {query}
+		+{abstract} close() : void
+		+{abstract} disable_recv_keepalive() : void
+		+{abstract} enable_recv_keepalive(std::chrono::milliseconds interval, std::uint32_t max_miss) : void
+		+{abstract} set_send_queue_limit(std::size_t bytes, std::size_t count) : void
+	}
+
+	class IoHandler {
+		+~IoHandler()
+		+on_init(std::shared_ptr<Endpoint> ep) : bool
+		+on_fini() : void
+		+on_recv_keepalive_timeout() : void
+		+on_send_keepalive_timeout() : void
+	}
+
+	class IoPool {
+		#IoPool(std::size_t threads)
+		+~IoPool()
+		+{static} initialize(std::size_t threads) : bool
+		+is_io_thread() : bool {query}
+		-joined_ : bool
+		+running() : bool {query}
+		-start(std::size_t request_threads) : bool
+		-stop_requested_ : bool
+		+next_io_context() : io_context_t&
+		-mutex_ : mutable std::mutex
+		-running_ : std::atomic<bool>
+		-rr_ : std::atomic<std::size_t>
+		+{static} global() : std::shared_ptr<IoPool>
+		+size() : std::size_t {query}
+		-size_ : std::size_t
+		-contexts_ : std::vector<std::shared_ptr<io_context_t>>
+		-guards_ : std::vector<std::shared_ptr<work_guard_t>>
+		-io_thread_ids_ : std::vector<std::thread::id>
+		-threads_ : std::vector<std::thread>
+		+{static} make_strand_of(io_context ioc) : strand_t
+		+stop_all() : void
+	}
+
+	class Linkable {
+		+~Linkable()
+		+on_accept(std::shared_ptr<Endpoint> ep, std::shared_ptr<IoHandler>& out) : void
+		+on_linkdown(std::shared_ptr<Endpoint> ep) : void
+		+on_linkfail(const asio::ip::tcp::endpoint& remote, std::error_code ec) : void
+		+on_linkup(std::shared_ptr<Endpoint> ep, std::shared_ptr<IoHandler>& out) : void
+	}
+
+	class Mechanism {
+		-Mechanism(std::shared_ptr<Impl> impl)
+		+~Mechanism()
+		+running() : bool {query}
+		+connect(const tcp::endpoint& remote, std::weak_ptr<Linkable> linkable, std::uint32_t timeout_ms, const tcp::endpoint& local) : std::error_code
+		+listen(const tcp::endpoint& local, std::weak_ptr<Linkable> linkable, std::uint32_t backlog) : std::error_code
+		+local_address_of(const tcp::endpoint& local) : std::optional<tcp::endpoint> {query}
+		-m_impl : std::shared_ptr<Impl>
+		+{static} create(Config cfg) : std::shared_ptr<Mechanism>
+		+endpoint_count() : std::size_t {query}
+		+io_threads() : std::size_t {query}
+		+close_all() : void
+		+set_linkable(std::weak_ptr<Linkable> linkable) : void
+	}
+
+	abstract class ReceiverConfig::IDatagramReceiver {
+		+~IDatagramReceiver()
+		+{abstract} is_open() : bool {query}
+		+{abstract} local_address() : endpoint_type {query}
+		+{abstract} find_session(uint32_t id) : std::shared_ptr<IDatagramSession> {query}
+		+{abstract} find_session_by_peer(endpoint peer) : std::shared_ptr<IDatagramSession> {query}
+		+{abstract} session_count() : std::size_t {query}
+		+{abstract} close() : void
+		+{abstract} close_session(endpoint peer) : void
+	}
+
+	class SessionHandler {
+		+~SessionHandler()
+		+on_session_open(std::shared_ptr<IDatagramSession> session) : bool
+		+on_session_timeout(std::shared_ptr<IDatagramSession> session) : bool
+		+on_session_close(std::shared_ptr<IDatagramSession> session) : void
+	}
+
+	class noncopyable {
+		#noncopyable()
+		#~noncopyable()
+	}
+
+	enum DatagramErrc {
+		datagram_truncated
+		ok
+		peer_not_allowed
+		session_limit_reached
+	}
+
+	enum NetErrc {
+		accept_failed
+		already_initialized
+		buffer_full
+		duplicate_endpoint
+		invalid_argument
+		keepalive_timeout
+		link_closed
+		not_connected
+		not_initialized
+		ok
+	}
+
+	class DatagramConfig {
+		+allow_broadcast : bool
+		+multicast_loopback : bool
+		+reuse_address : bool
+		+multicast_group : std::optional<asio::ip::address>
+		+multicast_interface : std::optional<asio::ip::address>
+		+send_queue_bytes : std::size_t
+		+send_queue_count : std::size_t
+		+socket_buf_size : std::size_t
+		+multicast_hops : std::uint8_t
+	}
+
+	class KeepAliveParams {
+		+valid() : bool {query}
+		+delay : std::chrono::milliseconds
+		+interval : std::chrono::milliseconds
+		+max_miss : std::uint32_t
+	}
+
+	class KeepAliveParams::SendKeepAliveParams {
+		+valid() : bool {query}
+		+delay : std::chrono::milliseconds
+		+interval : std::chrono::milliseconds
+	}
+
+	class Mechanism::Config {
+		+linger_zero : bool
+		+tcp_nodelay : bool
+		+send_queue_bytes : std::size_t
+		+send_queue_count : std::size_t
+		+socket_buf_size : std::size_t
+	}
+
+	class ReadQueue {
+		+busy() : bool {query}
+		+in_flight : std::optional<Request>
+		+take_in_flight() : std::optional<Request>
+	}
+
+	class ReadQueue::Request {
+		+handler : ReadHandler
+		+exact : bool
+		+buffer : mutable_buffer
+	}
+
+	class ReceiverConfig {
+		+local : asio::ip::udp::endpoint
+		+allow_broadcast : bool
+		+reuse_address : bool
+		+idle_check_interval : std::chrono::milliseconds
+		+idle_timeout : std::chrono::milliseconds
+		+make_datagram_receiver(const ReceiverConfig& cfg, std::shared_ptr<SessionHandler> handler, std::error_code& ec) : std::shared_ptr<IDatagramReceiver>
+		+max_sessions : std::size_t
+		+session_send_queue_bytes : std::size_t
+		+session_send_queue_count : std::size_t
+		+socket_buf_size : std::size_t
+	}
+
+	class RecvKeepAlive {
+		+RecvKeepAlive(io_context_t& ioc)
+		+active : bool
+		+progressed : std::atomic<bool>
+		+delay : std::chrono::milliseconds
+		+interval : std::chrono::milliseconds
+		+max_miss : std::uint32_t
+		+miss : std::uint32_t
+		+generation : std::uint64_t
+		+timer : timer_t
+		+reset() : void
+	}
+
+	class RecvKeepAlive::SendKeepAlive {
+		+SendKeepAlive(io_context_t& ioc)
+		+active : bool
+		+progressed : std::atomic<bool>
+		+delay : std::chrono::milliseconds
+		+interval : std::chrono::milliseconds
+		+generation : std::uint64_t
+		+timer : timer_t
+		+reset() : void
+	}
+
+	class RecvKeepAlive::SendKeepAlive::Endpoint::Impl {
+		+Impl(socket_t&& sock, io_context_t& ioc, std::shared_ptr<IoPool> pool_in, std::weak_ptr<Endpoint> owner_in, endpoint_id_t ep_id, endpoint_t local, endpoint_t remote)
+		+function<void(endpoint_id_t)
+		+~Impl()
+		+reads : ReadQueue
+		+recv_ka : RecvKeepAlive
+		+send_ka : SendKeepAlive
+		+writes : WriteQueue
+		+accept_read(mutable_buffer buf, ReadHandler h, bool exact) : bool
+		+accept_write(const_buffer buf, WriteHandler h) : bool
+		+endpoint_factory_ready() : bool
+		+handler_inited : bool
+		+link_established : bool
+		+id : const endpoint_id_t
+		+local_addr : const endpoint_t
+		+remote_addr : const endpoint_t
+		+close_reason : error_code_t
+		+quota_mutex : mutable std::mutex
+		+socket : socket_t
+		+closed : std::atomic<bool>
+		+closing : std::atomic<bool>
+		+has_pending_read : std::atomic<bool>
+		+unregistered : std::atomic<bool>
+		+bytes_read : std::atomic<std::uint64_t>
+		+bytes_written : std::atomic<std::uint64_t>
+		+MakeEndpointObject(std::shared_ptr<Endpoint::Impl> impl) : std::shared_ptr<Endpoint>
+		+public_self() : std::shared_ptr<Endpoint> {query}
+		+self_ref() : std::shared_ptr<Impl>
+		+handler : std::shared_ptr<IoHandler>
+		+pool : std::shared_ptr<IoPool>
+		+limit_bytes : std::size_t
+		+limit_count : std::size_t
+		+reserved_bytes : std::size_t
+		+reserved_count : std::size_t
+		+owner : std::weak_ptr<Endpoint>
+		+linkable : std::weak_ptr<Linkable>
+		+do_accept_read(mutable_buffer buf, ReadHandler h, bool exact) : void
+		+do_accept_write(const_buffer buf, WriteHandler h, std::size_t bytes) : void
+		+do_apply_recv_keepalive(std::chrono::milliseconds delay, std::chrono::milliseconds interval, std::uint32_t max_miss) : void
+		+do_apply_send_keepalive(std::chrono::milliseconds delay, std::chrono::milliseconds interval) : void
+		+do_close(const error_code_t& reason) : void
+		+do_disable_recv_keepalive() : void
+		+do_disable_send_keepalive() : void
+		+fail_connection(const error_code_t& ec) : void
+		+finish_handler() : void
+		+fire_unregister() : void
+		+handle_read_done(const error_code_t& ec, std::size_t n, bool exact) : void
+		+handle_write_done(const error_code_t& ec, std::size_t n) : void
+		+install_endpoint_factory(shared_ptr<Endpoint>(* ) ( std::shared_ptr<Endpoint::Impl>) fn) : void
+		+notify_linkdown() : void
+		+on_recv_keepalive_tick(const error_code_t& ec, std::uint64_t gen) : void
+		+on_send_keepalive_tick(const error_code_t& ec, std::uint64_t gen) : void
+		+post(std::function<void ( )> fn) : void
+		+post_keepalive_recv(std::chrono::milliseconds delay, std::chrono::milliseconds interval, std::uint32_t max_miss) : void
+		+post_keepalive_recv_disable() : void
+		+post_keepalive_send(std::chrono::milliseconds delay, std::chrono::milliseconds interval) : void
+		+post_keepalive_send_disable() : void
+		+pump_write() : void
+		+release_all_quota() : void
+		+request_close(const error_code_t& reason) : void
+		+set_send_limit(std::size_t bytes, std::size_t count) : void
+	}
+
+	class WriteQueue {
+		+empty() : bool {query}
+		+in_flight : bool
+		+drain() : std::deque<Request>
+		+pending : std::deque<Request>
+		+pop_front() : void
+		+push(Request req) : void
+	}
+
+	class WriteQueue::Request {
+		+handler : WriteHandler
+		+buffer : const_buffer
+		+bytes : std::size_t
+	}
+
+	class acceptor_selector <template<typename Protocol, bool=has_acceptor_type<Protocol>::value>> {
+	}
+
+	class acceptor_selectorProtocol,false <template<typename Protocol>> {
+	}
+
+	class has_acceptor <template<typename Protocol>> {
+	}
+
+	class has_acceptor_type <template<typename Protocol, typename=void>> {
+	}
+
+	class has_acceptor_typeProtocol,std::void_ttypenameProtocol::acceptor <template<typename Protocol>> {
+	}
+
+	class is_datagram_protocol <template<typename Protocol, typename=void>> {
+	}
+
+	class is_datagram_protocolProtocol,std::void_ttypenameProtocol::socket <template<typename Protocol>> {
+	}
+
+	class is_stream_protocol <template<typename Protocol, typename=void>> {
+	}
+
+	class is_stream_protocolProtocol,std::void_ttypenameProtocol::socket <template<typename Protocol>> {
+	}
+
+	class protocol_traits <template<typename Protocol>> {
+		+{static} has_accept : static constexpr bool
+		+{static} is_datagram : static constexpr bool
+		+{static} is_stream : static constexpr bool
+	}
+
+	namespace detail {
+		class IdRegistry {
+			+{static} allocate() : endpoint_id_t
+			+{static} last_allocated() : endpoint_id_t
+			+{static} kInvalidId : static constexpr endpoint_id_t
+			-{static} counter() : std::atomic<endpoint_id_t>&
+			+{static} try_allocate() : std::optional<endpoint_id_t>
+		}
+	}
+}
+
+
+
+
+
+/' Inheritance relationships '/
+
+netmech.noncopyable <|-- netmech.Endpoint
+
+
+netmech.noncopyable <|-- netmech.Mechanism
+
+
+
+
+
+/' Aggregation relationships '/
+
+netmech.Acceptor o-- netmech.IoPool
+
+
+netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl o-- netmech.Endpoint
+
+
+netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl o-- netmech.IoHandler
+
+
+netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl o-- netmech.IoPool
+
+
+netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl o-- netmech.Linkable
+
+
+netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl *-- netmech.ReadQueue
+
+
+netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl *-- netmech.RecvKeepAlive
+
+
+netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl *-- netmech.WriteQueue
+
+
+
+
+
+
+/' Dependency relationships '/
+
+netmech.Endpoint <.. netmech.IoHandler
+
+
+netmech.Endpoint <.. netmech.Linkable
+
+
+netmech.Endpoint <.. netmech.Linkable
+
+
+netmech.Endpoint <.. netmech.Linkable
+
+
+netmech.Endpoint <.. netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl
+
+
+netmech.IDatagramSession <.. netmech.SessionHandler
+
+
+netmech.IDatagramSession <.. netmech.SessionHandler
+
+
+netmech.IDatagramSession <.. netmech.SessionHandler
+
+
+netmech.IoHandler <.. netmech.Linkable
+
+
+netmech.IoHandler <.. netmech.Linkable
+
+
+netmech.IoPool <.. netmech.Acceptor
+
+
+netmech.IoPool <.. netmech.RecvKeepAlive::SendKeepAlive::Endpoint::Impl
+
+
+netmech.Linkable <.. netmech.Mechanism
+
+
+netmech.Linkable <.. netmech.Mechanism
+
+
+netmech.Linkable <.. netmech.Mechanism
+
+
+netmech.ReceiverConfig <.. netmech.ReceiverConfig
+
+
+netmech.SessionHandler <.. netmech.ReceiverConfig
+
+
+
+
+
+
+/' Nested objects '/
+
+netmech.Endpoint +-- netmech.RecvKeepAlive.SendKeepAlive.Endpoint.Impl
+
+
+netmech.KeepAliveParams +-- netmech.KeepAliveParams.SendKeepAliveParams
+
+
+netmech.Mechanism +-- netmech.Mechanism.Config
+
+
+netmech.ReadQueue +-- netmech.ReadQueue.Request
+
+
+netmech.ReceiverConfig +-- netmech.ReceiverConfig.IDatagramReceiver
+
+
+netmech.RecvKeepAlive +-- netmech.RecvKeepAlive.SendKeepAlive
+
+
+netmech.WriteQueue +-- netmech.WriteQueue.Request
+
+
+
+
+@enduml

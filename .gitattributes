@@ -1,0 +1,22 @@
+# 为 NetMechanism 保留文本文件的换行与编码约定
+# 源码统一使用 UTF-8（带 BOM，以兼容 MSVC 在 GBK 代码页下的编译）
+
+* text=auto eol=lf
+
+*.hpp   text eol=lf
+*.cpp   text eol=lf
+*.txt   text eol=lf
+*.md    text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+
+# Visual Studio 工程文件沿用 CRLF
+*.sln     text eol=crlf
+*.vcxproj text eol=crlf
+*.filters text eol=crlf
+
+# 二进制
+*.png  binary
+*.ico  binary
+*.lib  binary
+*.dll  binary

@@ -1,0 +1,210 @@
+@startuml netmech_tcp_connection
+' NetMechanism · TCP 连接子系统（公共契约 + 内部实现）
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 12
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam nodesep 28
+skinparam ranksep 42
+skinparam ArrowColor #5B6B7B
+skinparam ClassBorderColor #7A8B9A
+skinparam ClassBackgroundColor #F7F9FB
+skinparam ClassHeaderBackgroundColor #E8EEF4
+skinparam AbstractClassBackgroundColor #EFF6EC
+skinparam AbstractClassBorderColor #6E9C5A
+
+title NetMechanism · TCP 连接子系统\n<size:11>listen/connect → Acceptor/ConnectOp → Endpoint 读写与双向保活</size>
+
+    abstract class noncopyable <<utility>> {
+        #noncopyable()
+        #~noncopyable()
+    }
+
+    class Mechanism {
+        -m_impl : shared_ptr<Impl>
+        +{static} create(Config cfg) : shared_ptr<Mechanism>
+        +listen(local, linkable, backlog) : error_code
+        +connect(remote, linkable, timeout_ms, local) : error_code
+        +local_address_of(local) : optional<tcp::endpoint>
+        +set_linkable(linkable) : void
+        +endpoint_count() : size_t
+        +close_all() : void
+    }
+
+    class Endpoint {
+        -m_impl : shared_ptr<Impl>
+        +async_read_some(buf, h) : bool
+        +async_read_exact(buf, h) : bool
+        +async_write(buf, h) : bool
+        +enable_recv_keepalive(delay, interval, max_miss)
+        +enable_send_keepalive(delay, interval)
+        +set_send_queue_limit(bytes, count)
+        +id() : uint32_t
+        +local_address() / remote_address()
+        +is_open() : bool
+        +close() : void
+    }
+
+    abstract class Linkable <<interface>> {
+        +{abstract} on_linkup(ep, out_handler) : void
+        +{abstract} on_accept(ep, out_handler) : void
+        +{abstract} on_linkdown(ep) : void
+        +{abstract} on_linkfail(remote, ec) : void
+    }
+
+    abstract class IoHandler <<interface>> {
+        +{abstract} on_init(ep) : bool
+        +{abstract} on_fini() : void
+        +{abstract} on_recv_keepalive_timeout() : void
+        +{abstract} on_send_keepalive_timeout() : void
+    }
+
+    class "Mechanism::Config" as MechConfig <<struct>> {
+        +socket_buf_size : size_t
+        +send_queue_bytes : size_t
+        +send_queue_count : size_t
+        +tcp_nodelay : bool
+        +linger_zero : bool
+    }
+
+    class KeepAliveParams <<struct>> {
+        +delay : ms
+        +interval : ms
+        +max_miss : uint32_t
+        +valid() : bool
+    }
+
+    class SendKeepAliveParams <<struct>> {
+        +delay : ms
+        +interval : ms
+        +valid() : bool
+    }
+
+    class "Mechanism::Impl" as MechanismImpl {
+        +cfg : Config
+        +pool : shared_ptr<IoPool>
+        +endpoints : map<endpoint_id_t, ConnEntry>
+        +acceptors : vector<shared_ptr<Acceptor>>
+        +pending_connects : map<string, shared_ptr<ConnectOp>>
+        +linkable : weak_ptr<Linkable>
+        +listen(local, backlog, ec) : shared_ptr<Acceptor>
+        +connect(remote, local, timeout_ms, linkable) : error_code
+        +remove_endpoint(id) : void
+    }
+
+    class "Endpoint::Impl" as EndpointImpl {
+        +socket : socket_t
+        +reads : ReadQueue
+        +writes : WriteQueue
+        +recv_ka : RecvKeepAlive
+        +send_ka : SendKeepAlive
+        +handler : shared_ptr<IoHandler>
+        +pool : shared_ptr<IoPool>
+        +linkable : weak_ptr<Linkable>
+        +accept_read(buf, h, exact) : bool
+        +accept_write(buf, h) : bool
+        +pump_write() : void
+        +request_close(reason) : void
+        +do_close(reason) : void
+    }
+
+    class Acceptor {
+        +open(local, backlog) : error_code_t
+        +local_address() : endpoint_t
+        +is_open() : bool
+        +is_backoff() : bool
+        +retry_count() : uint32_t
+        +close() : void
+        -do_accept() : void
+        -handle_accept(ec) : void
+        -schedule_reopen(ec) : void
+    }
+
+    class ReadQueue <<struct>> {
+        +in_flight : optional<Request>
+        +take_in_flight() : optional<Request>
+        +busy() : bool
+    }
+
+    class WriteQueue <<struct>> {
+        +pending : deque<Request>
+        +in_flight : bool
+        +push(Request) : void
+        +drain() : deque<Request>
+    }
+
+    class RecvKeepAlive <<struct>> {
+        +timer : timer_t
+        +active : bool
+        +delay / interval / max_miss
+        +miss : uint32_t
+        +generation : uint64_t
+        +reset() : void
+    }
+
+    class SendKeepAlive <<struct>> {
+        +timer : timer_t
+        +active : bool
+        +interval : ms
+        +generation : uint64_t
+        +reset() : void
+    }
+
+    class ConnEntry <<struct>> {
+        +ep : shared_ptr<Endpoint>
+    }
+
+    class ConnectOp <<struct>> {
+        +sock : socket_t
+        +timer : timer_t
+        +remote / local : endpoint_t
+        +key : string
+        +impl : weak_ptr<Mechanism::Impl>
+        +linkable : weak_ptr<Linkable>
+        +finished : atomic<bool>
+    }
+
+' ---- 继承 ----
+noncopyable <|-- Mechanism
+noncopyable <|-- Endpoint
+
+' ---- Pimpl ----
+Mechanism *-- MechanismImpl : m_impl
+Endpoint *-- EndpointImpl : m_impl
+
+' ---- Mechanism::Impl 内部 ----
+MechanismImpl *-- Acceptor : acceptors
+MechanismImpl *-- ConnEntry : endpoints
+MechanismImpl *-- ConnectOp : pending_connects
+MechanismImpl ..> Linkable : 回调 on_linkup/fail
+Acceptor ..> Endpoint : 交付新连接
+ConnectOp ..> Endpoint : 建连成功
+
+' ---- Endpoint::Impl 内部 ----
+EndpointImpl *-- ReadQueue : reads
+EndpointImpl *-- WriteQueue : writes
+EndpointImpl *-- RecvKeepAlive : recv_ka
+EndpointImpl *-- SendKeepAlive : send_ka
+EndpointImpl --> Linkable : linkable
+EndpointImpl o-- IoHandler : handler
+EndpointImpl ..> IoPool : post / 线程归属
+
+' ---- 参数依赖 ----
+Mechanism ..> MechConfig : 构造
+Endpoint ..> KeepAliveParams : enable_recv
+Endpoint ..> SendKeepAliveParams : enable_send
+Linkable ..> IoHandler : 产出并交给 Endpoint
+
+note bottom of EndpointImpl
+  读写分离：ReadQueue 只有 1 个在途槽位，
+  WriteQueue 为 FIFO + 1 在途；两者均为
+  显式状态机，不依赖"队列长度"隐式判据。
+end note
+
+note bottom of Acceptor
+  accept 失败按 backoff 退避重开，
+  retry_attempts_/retry_errors_ 计数可观测。
+end note
+
+@enduml

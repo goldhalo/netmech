@@ -1,0 +1,111 @@
+@startuml netmech_support
+' NetMechanism · 基础设施与错误码
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 12
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam nodesep 30
+skinparam ranksep 45
+skinparam ArrowColor #5B6B7B
+skinparam ClassBorderColor #7A8B9A
+skinparam ClassBackgroundColor #F7F9FB
+skinparam ClassHeaderBackgroundColor #E8EEF4
+
+title NetMechanism · 基础设施与错误码\n<size:11>线程池 / ID 分配 / error_category / 编译期协议探测</size>
+
+class IoPool {
+    -size_ : size_t
+    -contexts_ : vector<shared_ptr<io_context_t>>
+    -guards_ : vector<shared_ptr<work_guard_t>>
+    -threads_ : vector<thread>
+    -running_ : atomic<bool>
+    +{static} initialize(size_t threads) : bool
+    +{static} global() : shared_ptr<IoPool>
+    +{static} make_strand_of(io_context) : strand_t
+    +next_io_context() : io_context_t&
+    +size() : size_t
+    +running() : bool
+    +is_io_thread() : bool
+    +stop_all() : void
+}
+
+class "detail::IdRegistry" as IdRegistry {
+    +{static} kInvalidId : constexpr endpoint_id_t
+    +{static} allocate() : endpoint_id_t
+    +{static} try_allocate() : optional<endpoint_id_t>
+    +{static} last_allocated() : endpoint_id_t
+    -{static} counter() : atomic<endpoint_id_t>&
+}
+
+enum NetErrc {
+    ok
+    not_initialized
+    already_initialized
+    invalid_argument
+    not_connected
+    link_closed
+    buffer_full
+    keepalive_timeout
+    accept_failed
+    duplicate_endpoint
+}
+
+enum DatagramErrc {
+    ok
+    datagram_truncated
+    peer_not_allowed
+    session_limit_reached
+}
+
+class NetCategoryImpl {
+    +name() : const char* {query} = "netmech"
+    +message(int ev) : string {query}
+}
+
+class NetBoostCategoryImpl {
+    +name() : const char* {query} = "netmech"
+    +message(int ev) : string {query}
+}
+
+interface "std::error_category" as StdCategory <<external>>
+class "io_context" as IoCtx <<asio>>
+class "strand" as Strand <<asio>>
+
+class "protocol_traits<Protocol>" as ProtocolTraits <<trait>> {
+    +{static} is_stream : constexpr bool
+    +{static} is_datagram : constexpr bool
+    +{static} has_accept : constexpr bool
+}
+
+IoPool -[hidden]down- IdRegistry
+IdRegistry -[hidden]down- NetErrc
+NetErrc -[hidden]down- NetCategoryImpl
+
+' ---- 错误码 ----
+NetErrc ..> NetCategoryImpl : make_error_code
+DatagramErrc ..> NetCategoryImpl : make_error_code
+NetCategoryImpl --|> StdCategory
+NetBoostCategoryImpl --|> StdCategory
+
+' ---- 线程模型 ----
+IoPool ..> IoCtx : 1 线程 1 context
+IoPool ..> Strand : make_strand_of
+
+note right of IoPool
+  约束：1 io_context = 1 线程。
+  同一 socket 上的 handler 天然串行，
+  故内部不使用 strand（见 io_pool.cpp 末尾说明）。
+end note
+
+note right of IdRegistry
+  endpoint id 全进程唯一、单调递增，
+  关闭后不复用；kInvalidId 表示未分配。
+end note
+
+note bottom of ProtocolTraits
+  SFINAE 探测：Protocol::socket / Protocol::acceptor 是否存在，
+  决定 acceptor_selector 走 stream 还是 datagram 分支。
+end note
+
+@enduml

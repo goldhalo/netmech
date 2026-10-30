@@ -1,0 +1,80 @@
+@startuml netmech_overview
+' NetMechanism 分层总览（全景，不含成员细节）
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 13
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam nodesep 25
+skinparam ranksep 45
+skinparam ArrowColor #5B6B7B
+skinparam ClassBorderColor #7A8B9A
+skinparam ClassBackgroundColor #F7F9FB
+skinparam ClassHeaderBackgroundColor #E8EEF4
+skinparam InterfaceBackgroundColor #EFF6EC
+skinparam InterfaceBorderColor #6E9C5A
+
+title NetMechanism 分层总览\n<size:11>L0 调用方 / L1 公共契约 / L2 内部实现 / L3 基础设施</size>
+
+package "L0 调用方（应用侧自行实现）" as L0 #F2F5F8 {
+    interface Linkable
+    interface IoHandler
+    interface SessionHandler
+}
+
+package "L1 公共契约（include/netmech，13 头）" as L1 #EFF6EC {
+    class Mechanism
+    class Endpoint
+    interface IDatagramChannel
+    interface IDatagramReceiver
+    class "Mechanism::Config" as MechConfig <<struct>>
+    class ReceiverConfig <<struct>>
+    class DatagramConfig <<struct>>
+    class KeepAliveParams <<struct>>
+}
+
+package "L2 内部实现（src，不对外暴露）" as L2 #FBF7F7 {
+    class "Mechanism::Impl" as MechanismImpl
+    class "Endpoint::Impl" as EndpointImpl
+    class Acceptor
+    class UdpChannel
+    class DatagramReceiver
+    class DatagramSession
+}
+
+package "L3 基础设施与错误" as L3 #F6F6FA {
+    class IoPool
+    class "detail::IdRegistry" as IdRegistry
+    enum NetErrc
+    enum DatagramErrc
+}
+
+' ---- 层间关系 ----
+L0 ..> L1 : 实现回调接口\n注册到门面
+L1 *--> L2 : Pimpl 持有\n工厂创建
+L2 ..> L3 : 线程池 / ID 分配 / 错误码
+
+' ---- 层内关键关系 ----
+Linkable -right-> Mechanism : listen/connect
+IoHandler -right-> Endpoint : on_init 产出
+SessionHandler -right-> IDatagramReceiver : 会话事件
+Mechanism *-right- MechanismImpl
+Endpoint *-right- EndpointImpl
+IDatagramChannel <|-- UdpChannel
+IDatagramReceiver <|-- DatagramReceiver
+IDatagramReceiver ..> DatagramSession : 创建并托管
+
+note right of L1
+  唯一对外契约：
+  * 只暴露 shared_ptr 门面 + 抽象接口
+  * 实现全部 Pimpl 到 L2
+  * 除 std::error_code 外不抛异常
+end note
+
+note right of L2
+  全部定义在 src/ 下，公共头中仅
+  "struct Impl;" 前向声明。
+  hpp2plantuml 扫不到，需人工补齐。
+end note
+
+@enduml
