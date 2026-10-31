@@ -178,7 +178,7 @@
   <!-- ======================================================================
        源文件
        ====================================================================== -->
-    <ItemGroup Label="Sources">
+      <ItemGroup Label="Sources">
     <ClCompile Include="src\acceptor.cpp" />
     <ClCompile Include="src\address.cpp" />
     <ClCompile Include="src\conn.cpp" />
@@ -189,8 +189,9 @@
     <ClCompile Include="src\serial.cpp" />
     <ClCompile Include="src\timer.cpp" />
     <ClCompile Include="src\udp_endpoint.cpp" />
+    <ClCompile Include="src\worker_pool.cpp" />
   </ItemGroup>
-    <ItemGroup Label="PrivateHeaders">
+      <ItemGroup Label="PrivateHeaders">
     <ClInclude Include="src\acceptor.hpp" />
     <ClInclude Include="src\address_internal.hpp" />
     <ClInclude Include="src\conn_state.hpp" />
@@ -200,7 +201,7 @@
     <ClInclude Include="src\registry.hpp" />
     <ClInclude Include="src\timer.hpp" />
   </ItemGroup>
-    <ItemGroup Label="PublicHeaders">
+      <ItemGroup Label="PublicHeaders">
     <ClInclude Include="include\netmech\common.hpp" />
     <ClInclude Include="include\netmech\conn.hpp" />
     <ClInclude Include="include\netmech\iohandler.hpp" />
@@ -209,6 +210,7 @@
     <ClInclude Include="include\netmech\net.hpp" />
     <ClInclude Include="include\netmech\serial.hpp" />
     <ClInclude Include="include\netmech\udp.hpp" />
+    <ClInclude Include="include\netmech\worker_pool.hpp" />
   </ItemGroup>
   <ItemGroup Label="Docs">
     <None Include="README.md" />
