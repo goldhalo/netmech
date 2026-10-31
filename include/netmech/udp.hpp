@@ -375,6 +375,27 @@ public:
     ///
     /// @note 实现上内部加锁（socket 句柄非线程安全），因此多线程并发发送是安全的，
     ///       但报文之间的相对顺序不保证——UDP 本身也不保证到达顺序。
+    ///
+    /// @par buffer 生命周期（★ 这里和 TCP 不一样，容易踩）
+    /// 发送是**异步**的，库要等到底层 sendto 完成才不再访问 `buf.data`：
+    ///
+    ///  - `buf.owner` **非空**：库持有它直到发送完成，调用方可以立即释放源数据。
+    ///  - `buf.owner` **为空**：`buf.data` 必须**一直有效到发送完成**。
+    ///    传栈上数组、或传一块会被下一帧复用的接收缓冲，都会把错乱的数据
+    ///    发出去 —— 现象是对端收到 0 个包、或者收到垃圾。
+    ///
+    /// 为此推荐两种写法：
+    /// @code
+    ///     // 1) 短生命周期数据：让 owner 持有
+    ///     auto pkt = std::make_shared<std::vector<std::uint8_t>>(data, data + n);
+    ///     ep.send_to(dst, ConstBuf{pkt, pkt->data(), pkt->size()});
+    ///
+    ///     // 2) 高频发送：自己维护缓冲池，发送完成回调里才归还
+    /// @endcode
+    ///
+    /// @warning 对比 `Conn::write`（TCP）：那个**内部会拷贝**，传栈缓冲是安全的。
+    ///          UDP 为了零拷贝不拷，所以生命周期要调用方自己管。这两者的差异
+    ///          是刻意的（UDP 高频小包，多一次 memcpy 不划算），但必须知道。
     bool send_to(const Address& dst, ConstBuf buf);
 
     /// 本端实际绑定地址（bind 时端口给 0 就靠它取回）。
