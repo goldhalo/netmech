@@ -61,6 +61,7 @@
 #include "netmech/iohandler.hpp"
 #include "netmech/udp.hpp"
 #include "netmech/serial.hpp"
+#include "netmech/worker_pool.hpp"
 
 // 具体类型
 #include "netmech/conn.hpp"
