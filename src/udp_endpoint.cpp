@@ -1,5 +1,5 @@
 ﻿// =============================================================================
-//  NetMechanism - UdpEndpoint 实现
+//  netmech - UdpEndpoint 实现
 // =============================================================================
 //  文件    : udp_endpoint.cpp
 //  用途    : 实现 netmech::UdpEndpoint / create_udp_endpoint。

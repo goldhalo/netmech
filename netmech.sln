@@ -2,20 +2,20 @@
 # Visual Studio Version 16
 VisualStudioVersion = 16.0.30523.133
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetMechanism", "NetMechanism.vcxproj", "{A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "netmech", "netmech.vcxproj", "{A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetMechanismTest", "NetMechanismTest.vcxproj", "{B8E4D2F3-5C9E-4A7B-8D3F-2E6C9B4A8F01}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "netmech_ut", "netmech_ut.vcxproj", "{B8E4D2F3-5C9E-4A7B-8D3F-2E6C9B4A8F01}"
 	ProjectSection(ProjectDependencies) = postProject
 		{A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90} = {A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90}
 	EndProjectSection
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetmechEcho", "NetmechEcho.vcxproj", "{C9F5E3A4-6DAF-4B8C-9E40-3F7DAC5B9021}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "netmech_echo", "netmech_echo.vcxproj", "{C9F5E3A4-6DAF-4B8C-9E40-3F7DAC5B9021}"
 	ProjectSection(ProjectDependencies) = postProject
 		{A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90} = {A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90}
 	EndProjectSection
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetmechUdp", "NetmechUdp.vcxproj", "{D1A6F4B5-7EB0-4C9D-AF51-4A8EBD6CA132}"
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NetmechSerial", "NetmechSerial.vcxproj", "{6B40725E-5630-4532-982E-8A271BDC38A2}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "netmech_udp", "netmech_udp.vcxproj", "{D1A6F4B5-7EB0-4C9D-AF51-4A8EBD6CA132}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "serial_check", "serial_check.vcxproj", "{6B40725E-5630-4532-982E-8A271BDC38A2}"
 	ProjectSection(ProjectDependencies) = postProject
 		{A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90} = {A7F3C1E2-4B8D-4F6A-9C2E-1D5B8A3F7E90}
 	EndProjectSection

@@ -1,5 +1,5 @@
 ﻿# ============================================================================
-#  NetMechanism —— netmech 网络通信库（C++17 / 独立 Asio / 无 C++20）
+#  netmech —— 网络通信库（C++17 / 独立 Asio / 无 C++20）
 #
 #  独立可构建工程：
 #      cmake -S . -B build -G "Visual Studio 16 2019" -A x64
@@ -16,7 +16,7 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-project(NetMechanism
+project(netmech
         VERSION 0.9.0
         DESCRIPTION "netmech network library (standalone asio, C++17)"
         LANGUAGES CXX)
@@ -50,9 +50,9 @@ endif()
 # ---------------------------------------------------------------------------
 # 1. 选项
 # ---------------------------------------------------------------------------
-option(NETMECH_BUILD_TESTS    "构建 NetMechanism 单元测试" ON)
-option(NETMECH_BUILD_EXAMPLES "构建 NetMechanism 示例（echo server/client）" ON)
-option(NETMECH_BUILD_BENCH    "构建 NetMechanism 性能基准（默认 OFF）" OFF)
+option(NETMECH_BUILD_TESTS    "构建 netmech 单元测试" ON)
+option(NETMECH_BUILD_EXAMPLES "构建 netmech 示例（echo server/client）" ON)
+option(NETMECH_BUILD_BENCH    "构建 netmech 性能基准（默认 OFF）" OFF)
 option(NETMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用，默认 OFF）" OFF)
 
 # ---------------------------------------------------------------------------
@@ -153,42 +153,42 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src")
 endif()
 
 if(NETMECH_SOURCES)
-    add_library(NetMechanism STATIC ${NETMECH_SOURCES} ${NETMECH_PUBLIC_HEADERS})
+    add_library(netmech STATIC ${NETMECH_SOURCES} ${NETMECH_PUBLIC_HEADERS})
     set(NETMECH_IS_INTERFACE OFF)
 else()
-    message(STATUS "NetMechanism: src/ 下暂无 .cpp，构建为 INTERFACE（header-only）库")
-    add_library(NetMechanism INTERFACE)
-    target_sources(NetMechanism INTERFACE ${NETMECH_PUBLIC_HEADERS})
+    message(STATUS "netmech: src/ 下暂无 .cpp，构建为 INTERFACE（header-only）库")
+    add_library(netmech INTERFACE)
+    target_sources(netmech INTERFACE ${NETMECH_PUBLIC_HEADERS})
     set(NETMECH_IS_INTERFACE ON)
 endif()
 
-set_target_properties(NetMechanism PROPERTIES
+set_target_properties(netmech PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     POSITION_INDEPENDENT_CODE ON
-    OUTPUT_NAME "NetMechanism"
-    FOLDER "NetMechanism")
+    OUTPUT_NAME "netmech"
+    FOLDER "netmech")
 
-target_include_directories(NetMechanism PUBLIC
+target_include_directories(netmech PUBLIC
     $<BUILD_INTERFACE:${NETMECH_INCLUDE_DIR}>
     $<INSTALL_INTERFACE:include>)
 
 if(NOT NETMECH_IS_INTERFACE)
-    target_include_directories(NetMechanism PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    set_target_properties(NetMechanism PROPERTIES
+    target_include_directories(netmech PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    set_target_properties(netmech PROPERTIES
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
         PUBLIC_HEADER "${NETMECH_PUBLIC_HEADERS}")
 endif()
 
 # 独立 Asio 是 header-only：无需链接任何第三方库。
-target_link_libraries(NetMechanism PUBLIC netmech_compile_options)
+target_link_libraries(netmech PUBLIC netmech_compile_options)
 
 # ---------------------------------------------------------------------------
 # 5. 头文件就绪性检查（并行开发期间给出清晰提示而不是一堆模板错误）
 # ---------------------------------------------------------------------------
 if(NOT EXISTS "${NETMECH_INCLUDE_DIR}/netmech")
     message(WARNING
-        "NetMechanism: 公共头目录 ${NETMECH_INCLUDE_DIR}/netmech 尚不存在，"
+        "netmech: 公共头目录 ${NETMECH_INCLUDE_DIR}/netmech 尚不存在，"
         "测试/示例暂时无法编译。")
 endif()
 
@@ -198,15 +198,15 @@ endif()
 if(NETMECH_BUILD_TESTS)
     enable_testing()
     if(NOT EXISTS "${NETMECH_INCLUDE_DIR}/netmech/mechanism.hpp")
-        message(WARNING "NetMechanism: 缺少 netmech/mechanism.hpp，跳过测试目标")
+        message(WARNING "netmech: 缺少 netmech/mechanism.hpp，跳过测试目标")
     else()
         file(GLOB NETMECH_TEST_SOURCES CONFIGURE_DEPENDS
              "${CMAKE_CURRENT_SOURCE_DIR}/test/*.cpp")
         if(NETMECH_TEST_SOURCES)
             add_executable(netmech_ut ${NETMECH_TEST_SOURCES})
-            set_target_properties(netmech_ut PROPERTIES FOLDER "NetMechanism/test")
+            set_target_properties(netmech_ut PROPERTIES FOLDER "netmech/test")
             target_include_directories(netmech_ut PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
-            target_link_libraries(netmech_ut PRIVATE NetMechanism)
+            target_link_libraries(netmech_ut PRIVATE netmech)
 
             add_test(NAME netmech_ut COMMAND netmech_ut)
             set_tests_properties(netmech_ut PROPERTIES
@@ -234,8 +234,8 @@ if(NETMECH_BUILD_BENCH)
     foreach(src ${NETMECH_BENCH_SOURCES})
         get_filename_component(name ${src} NAME_WE)
         add_executable(${name} ${src})
-        set_target_properties(${name} PROPERTIES FOLDER "NetMechanism/bench")
-        target_link_libraries(${name} PRIVATE NetMechanism)
+        set_target_properties(${name} PROPERTIES FOLDER "netmech/bench")
+        target_link_libraries(${name} PRIVATE netmech)
     endforeach()
 endif()
 
@@ -248,22 +248,22 @@ if(NETMECH_BUILD_EXAMPLES)
     if(EXISTS "${NETMECH_INCLUDE_DIR}/netmech/mechanism.hpp"
        AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example/echo_main.cpp")
         add_executable(netmech_echo example/echo_main.cpp)
-        set_target_properties(netmech_echo PROPERTIES FOLDER "NetMechanism/example")
-        target_link_libraries(netmech_echo PRIVATE NetMechanism)
+        set_target_properties(netmech_echo PROPERTIES FOLDER "netmech/example")
+        target_link_libraries(netmech_echo PRIVATE netmech)
 
     # 串口自检（Windows 的 com0com / Linux 的 pty 都能用）
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example/serial_check.cpp")
         add_executable(serial_check example/serial_check.cpp)
-        set_target_properties(serial_check PROPERTIES FOLDER "NetMechanism/example")
-        target_link_libraries(serial_check PRIVATE NetMechanism)
+        set_target_properties(serial_check PROPERTIES FOLDER "netmech/example")
+        target_link_libraries(serial_check PRIVATE netmech)
     endif()
     endif()
 
     if(EXISTS "${NETMECH_INCLUDE_DIR}/netmech/udp.hpp"
        AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example/udp_echo_main.cpp")
         add_executable(netmech_udp example/udp_echo_main.cpp)
-        set_target_properties(netmech_udp PROPERTIES FOLDER "NetMechanism/example")
-        target_link_libraries(netmech_udp PRIVATE NetMechanism)
+        set_target_properties(netmech_udp PROPERTIES FOLDER "netmech/example")
+        target_link_libraries(netmech_udp PRIVATE netmech)
     endif()
 endif()
 
@@ -272,7 +272,7 @@ endif()
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 if(NOT NETMECH_IS_INTERFACE)
-    install(TARGETS NetMechanism
+    install(TARGETS netmech
             ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
             PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/netmech")
 else()
@@ -285,7 +285,7 @@ endif()
 # 9. 配置摘要
 # ---------------------------------------------------------------------------
 message(STATUS "----------------------------------------------------------")
-message(STATUS " NetMechanism ${PROJECT_VERSION}")
+message(STATUS " netmech ${PROJECT_VERSION}")
 message(STATUS "   C++ 标准      : ${CMAKE_CXX_STANDARD}")
 message(STATUS "   构建类型      : ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES}")
 message(STATUS "   NETMECH_BUILD_TESTS    : ${NETMECH_BUILD_TESTS}")

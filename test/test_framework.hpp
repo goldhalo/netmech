@@ -1,5 +1,5 @@
 ﻿// ============================================================================
-//  test_framework.hpp —— NetMechanism 极简单元测试框架
+//  test_framework.hpp —— netmech 极简单元测试框架
 //
 //  不依赖 gtest/gmock，单头文件，C++17 可编译。
 //  特性：
@@ -302,7 +302,7 @@ inline int run_all(const std::string& filter = std::string())
     }
 
     std::cout << "==========================================================\n"
-              << " NetMechanism 单元测试\n";
+              << " netmech 单元测试\n";
     if (!filter.empty())
         std::cout << " 过滤: \"" << filter << "\"  (匹配 " << selected.size()
                   << " / " << registry().size() << " 个用例)\n";

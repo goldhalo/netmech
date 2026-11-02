@@ -1,5 +1,5 @@
 @startuml netmech_overview
-' NetMechanism 分层总览（全景，不含成员细节）
+' netmech 分层总览（全景，不含成员细节）
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "Microsoft YaHei"
 skinparam defaultFontSize 13
@@ -14,7 +14,7 @@ skinparam ClassHeaderBackgroundColor #E8EEF4
 skinparam InterfaceBackgroundColor #EFF6EC
 skinparam InterfaceBorderColor #6E9C5A
 
-title NetMechanism 分层总览\n<size:11>L0 调用方 / L1 公共契约 / L2 内部实现 / L3 基础设施</size>
+title netmech 分层总览\n<size:11>L0 调用方 / L1 公共契约 / L2 内部实现 / L3 基础设施</size>
 
 package "L0 调用方（应用侧自行实现）" as L0 #F2F5F8 {
     interface Linkable

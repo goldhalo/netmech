@@ -1,5 +1,5 @@
 @startuml netmech_datagram
-' NetMechanism · UDP 数据报子系统
+' netmech · UDP 数据报子系统
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "Microsoft YaHei"
 skinparam defaultFontSize 12
@@ -14,7 +14,7 @@ skinparam ClassHeaderBackgroundColor #E8EEF4
 skinparam AbstractClassBackgroundColor #EFF6EC
 skinparam AbstractClassBorderColor #6E9C5A
 
-title NetMechanism · UDP 数据报子系统\n<size:11>无连接通道 UdpChannel + 有会话的 DatagramReceiver/DatagramSession 两套 API</size>
+title netmech · UDP 数据报子系统\n<size:11>无连接通道 UdpChannel + 有会话的 DatagramReceiver/DatagramSession 两套 API</size>
 
 ' ============ 公共契约 ============
 abstract class IDatagramChannel <<interface>> {

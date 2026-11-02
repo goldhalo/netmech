@@ -1,5 +1,5 @@
 ﻿// ============================================================================
-//  test_main.cpp —— NetMechanism 单元测试入口
+//  test_main.cpp —— netmech 单元测试入口
 //
 //  使用自研极简框架（test_framework.hpp），不引入 gtest。
 //

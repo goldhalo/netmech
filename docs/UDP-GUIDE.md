@@ -1,4 +1,4 @@
-# NetMechanism UDP 使用指南
+# netmech UDP 使用指南
 
 > 面向使用者的实操文档。设计依据见 [UDP支持评估](UDP支持评估.md)，实现演进见 P1/P2/P3 交付记录。
 

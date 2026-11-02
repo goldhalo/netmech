@@ -1,5 +1,5 @@
 @startuml netmech_tcp_connection
-' NetMechanism · TCP 连接子系统（公共契约 + 内部实现）
+' netmech · TCP 连接子系统（公共契约 + 内部实现）
 skinparam backgroundColor #FFFFFF
 skinparam defaultFontName "Microsoft YaHei"
 skinparam defaultFontSize 12
@@ -14,7 +14,7 @@ skinparam ClassHeaderBackgroundColor #E8EEF4
 skinparam AbstractClassBackgroundColor #EFF6EC
 skinparam AbstractClassBorderColor #6E9C5A
 
-title NetMechanism · TCP 连接子系统\n<size:11>listen/connect → Acceptor/ConnectOp → Endpoint 读写与双向保活</size>
+title netmech · TCP 连接子系统\n<size:11>listen/connect → Acceptor/ConnectOp → Endpoint 读写与双向保活</size>
 
     abstract class noncopyable <<utility>> {
         #noncopyable()

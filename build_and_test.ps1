@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    NetMechanism 一键构建 + 单元测试脚本（Windows / MSVC 2019 / x64）。
+    netmech 一键构建 + 单元测试脚本（Windows / MSVC 2019 / x64）。
 
 .DESCRIPTION
     流水线：

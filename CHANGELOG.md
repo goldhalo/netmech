@@ -7,6 +7,41 @@
 
 ---
 
+## [未发布]
+
+### 变更（破坏性）
+
+**CMake 目标与工程名统一为 `netmech`**
+
+此前 `project()` 与库目标都叫 `NetMechanism`，而目录、头文件命名空间
+（`netmech/`、`netmech::`）、可执行文件（`netmech_ut` / `netmech_echo` /
+`netmech_udp` / `serial_check`）全都是小写 `netmech`，两套写法并存。
+
+现在统一：
+
+| 项 | 旧 | 新 |
+|---|---|---|
+| project() | `NetMechanism` | `netmech` |
+| 库目标 | `NetMechanism` | `netmech` |
+| 静态库产物 | `libNetMechanism.a` / `NetMechanism.lib` | `libnetmech.a` / `netmech.lib` |
+| VS 工程 | `NetMechanism.vcxproj` / `NetMechanismTest.vcxproj` | `netmech.vcxproj` / `netmech_ut.vcxproj` |
+| 解决方案 | `NetMechanism.sln` | `netmech.sln` |
+
+`include <netmech/...>`、`namespace netmech`、各可执行文件名**均未改变**。
+
+**对使用方的影响**：`add_subdirectory(netmech)` 后需把
+`target_link_libraries(... NetMechanism)` 改成 `netmech`。
+
+### 修复
+
+- `NetmechSerial.vcxproj` 是从 udp 工程复制来的，`TargetName` / `RootNamespace`
+  仍是 `netmech_udp`，编译会覆盖 `netmech_udp.exe`。已改名 `serial_check.vcxproj`
+  并把产物修正为 `serial_check.exe`。
+- 新增 `tools/check_vs_projects.py`：校验 sln/vcxproj 的工程引用、源文件路径、
+  GUID、链接库名是否互相自洽（改名后没有 MSBuild 环境时的兜底检查）。
+
+---
+
 ## [0.9.0] — 首个版本
 
 功能已完整，Windows 与 Linux 双平台验证过，但尚未在真实项目中长期运行。

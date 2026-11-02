@@ -1,4 +1,4 @@
-# NetMechanism 对外接口（草案）
+# netmech 对外接口（草案）
 
 评审材料，**尚未实现**。通过后按本目录结构移入 `include/netmech/`，并按第四节改造现有代码。
 

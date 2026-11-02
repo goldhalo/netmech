@@ -1,4 +1,4 @@
-# 为 NetMechanism 保留文本文件的换行与编码约定
+# 为 netmech 保留文本文件的换行与编码约定
 # 源码统一使用 UTF-8（带 BOM，以兼容 MSVC 在 GBK 代码页下的编译）
 
 * text=auto eol=lf

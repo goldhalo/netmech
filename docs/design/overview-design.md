@@ -1,4 +1,4 @@
-# NetMechanism 概要设计（v1.0）
+# netmech 概要设计（v1.0）
 
 对应对外契约：`docs/design/proposed/netmech/{common,tcp,udp}.hpp`（v1.0 定稿）。
 本文只讲**内部怎么实现**。契约是条件，实现层任何调整都不得破坏头文件里的承诺。
