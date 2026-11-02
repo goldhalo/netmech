@@ -55,6 +55,16 @@ option(NETMECH_BUILD_EXAMPLES "构建 netmech 示例（echo server/client）" ON
 option(NETMECH_BUILD_BENCH    "构建 netmech 性能基准（默认 OFF）" OFF)
 option(NETMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用，默认 OFF）" OFF)
 
+# 位置无关代码。
+#
+# 本库只出静态库，但静态库常常被链进 .so（公司项目里 netmech + modbusmech
+# 一起链进 moc 的 .so）。缺 -fPIC 时编静态库、跑单测都正常，**只在最终链
+# .so 那一步**报：
+#     relocation R_X86_64_PC32 against symbol `...' can not be used when
+#     making a shared object; recompile with -fPIC
+# 纯静态场景（板端）可 -DNETMECH_PIC=OFF 关掉。
+option(NETMECH_PIC "编译为位置无关代码（静态库要链进 .so 时必须开）" ON)
+
 # ---------------------------------------------------------------------------
 # 2. 第三方依赖：独立 Asio（header-only，随仓库提供）
 # ---------------------------------------------------------------------------
@@ -165,7 +175,7 @@ endif()
 set_target_properties(netmech PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
-    POSITION_INDEPENDENT_CODE ON
+    POSITION_INDEPENDENT_CODE ${NETMECH_PIC}
     OUTPUT_NAME "netmech"
     FOLDER "netmech")
 
