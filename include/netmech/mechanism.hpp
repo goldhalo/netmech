@@ -47,7 +47,11 @@
 #include <asio/ip/tcp.hpp>
 
 #include "netmech/common.hpp"
-#include "netmech/common.hpp"
+#include "netmech/linkable.hpp"
+// ↑ 本头直接用 std::weak_ptr<Linkable> 作为参数类型。缺这个 include 时，
+//   单独 #include <netmech/mechanism.hpp> 会报 "Linkable was not declared"
+//   —— 只有按 netmech.hpp 的顺序（linkable 在前）引入时才碰巧编得过。
+//   （原先这里重复 include 了两次 common.hpp，一并去掉。）
 
 // SOMAXCONN 在不同平台上取值不同（Windows 0x7fffffff / Linux 128 / 部分嵌入式
 // 平台未定义）。本模块**刻意不使用**平台值作为默认 backlog，见下方
