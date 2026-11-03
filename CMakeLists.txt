@@ -28,6 +28,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)           # 关掉 gnu++17，保证严格 C++17
 
+# 安装目录规范（CMAKE_INSTALL_LIBDIR / INCLUDEDIR / BINDIR / DATADIR）。
+# 必须放在定义 target 之前 —— target_include_directories 里的
+# $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/...> 是**立即展开**的，
+# 变量还没定义就会展开成空串，导出出来的 Config 里 include 路径就断了。
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -95,7 +102,15 @@ add_library(netmech_compile_options INTERFACE)
 
 
 if(NETMECH_ASIO_INCLUDE_DIR)
-    target_include_directories(netmech_compile_options SYSTEM INTERFACE ${NETMECH_ASIO_INCLUDE_DIR})
+    # 公共头（conn.hpp / mechanism.hpp / linkable.hpp / common.hpp）直接
+    # #include <asio/...>，所以 Asio 的 include 目录是**使用者的必需项**，
+    # 不是我们自己的内部实现细节 → 必须随包安装，否则装了 netmech 也编不过。
+    #
+    # 装到 include/netmech/thirdparty/asio/include 而不是 include/ 根下：
+    # 后者会把 asio/ 和 asio.hpp 撒进全局头目录，和系统级 Asio 撞车。
+    target_include_directories(netmech_compile_options SYSTEM INTERFACE
+        $<BUILD_INTERFACE:${NETMECH_ASIO_INCLUDE_DIR}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/netmech/thirdparty/asio/include>)
 endif()
 
 target_compile_definitions(netmech_compile_options INTERFACE
@@ -278,18 +293,57 @@ if(NETMECH_BUILD_EXAMPLES)
 endif()
 
 # ---------------------------------------------------------------------------
-# 8. 安装
+# 8. 安装与导出
 # ---------------------------------------------------------------------------
-include(GNUInstallDirs)
+#  装完之后使用者只需要：
+#      find_package(netmech REQUIRED)
+#      target_link_libraries(app PRIVATE netmech::netmech)
+#  Asio（自带的那份）、Threads、ws2_32 都由导出的 target 带着走。
+#
+#  默认前缀：Linux -> /usr/local，Windows -> C:/Program Files/netmech
+# ---------------------------------------------------------------------------
 if(NOT NETMECH_IS_INTERFACE)
     install(TARGETS netmech
+            EXPORT netmechTargets
             ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
             PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/netmech")
 else()
+    install(TARGETS netmech EXPORT netmechTargets)
     install(DIRECTORY "${NETMECH_INCLUDE_DIR}/netmech"
             DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
             FILES_MATCHING PATTERN "*.hpp")
 endif()
+
+# 编译选项载体是 PUBLIC 依赖，导出时会被引用到，必须一起进导出集
+install(TARGETS netmech_compile_options EXPORT netmechTargets)
+
+# 自带 Asio（公共头的硬依赖，见上面 target_include_directories 的说明）
+if(NETMECH_ASIO_INCLUDE_DIR)
+    install(DIRECTORY "${NETMECH_ASIO_INCLUDE_DIR}/"
+            DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/netmech/thirdparty/asio/include")
+endif()
+
+install(EXPORT netmechTargets
+        FILE netmechTargets.cmake
+        NAMESPACE netmech::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/netmech")
+
+configure_package_config_file(cmake/netmechConfig.cmake.in
+        "${CMAKE_CURRENT_BINARY_DIR}/netmechConfig.cmake"
+        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/netmech")
+
+write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/netmechConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMinorVersion)
+
+install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/netmechConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/netmechConfigVersion.cmake"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/netmech")
+
+install(FILES LICENSE AUTHORS.md
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/netmech")
 
 # ---------------------------------------------------------------------------
 # 9. 配置摘要

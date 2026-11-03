@@ -9,6 +9,24 @@
 
 ## [未发布]
 
+### 新增
+
+**CMake 安装与导出（find_package）**
+
+- `cmake --install` 现在装出完整的一套：头文件、静态库、
+  `lib/cmake/netmech/` 下的 `Config` / `ConfigVersion` / `Targets`，
+  以及 `share/doc/netmech` 下的 LICENSE / AUTHORS
+- 使用者只需要两行：
+  ```cmake
+  find_package(netmech REQUIRED)
+  target_link_libraries(app PRIVATE netmech::netmech)
+  ```
+- **自带的 Asio 随包安装**（装到 `include/netmech/thirdparty/asio/include`）：
+  公共头 `conn.hpp` / `mechanism.hpp` / `linkable.hpp` / `common.hpp` 直接
+  `#include <asio/...>`，不带上这份头，装了 netmech 也编不过。放在
+  `include/netmech/` 下面而不是 `include/` 根下，是为了不和系统级 Asio 撞车。
+- 默认安装前缀：Linux `/usr/local`，Windows `C:/Program Files/netmech`
+
 ### 变更（破坏性）
 
 **CMake 目标与工程名统一为 `netmech`**

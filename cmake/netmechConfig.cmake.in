@@ -1,0 +1,28 @@
+@PACKAGE_INIT@
+
+# -----------------------------------------------------------------------------
+#  netmechConfig.cmake —— find_package(netmech) 的入口
+# -----------------------------------------------------------------------------
+#  用法：
+#      find_package(netmech REQUIRED)
+#      target_link_libraries(app PRIVATE netmech::netmech)
+#
+#  导出的 target 已经带上了：
+#    · include/netmech            —— 本库头文件
+#    · include/netmech/thirdparty/asio/include —— 自带 Asio（公共头硬依赖）
+#    · Threads（POSIX）/ ws2_32 mswsock（Windows）
+#  所以使用者不需要额外 find_package(Threads) 或装 Asio。
+# -----------------------------------------------------------------------------
+
+include(CMakeFindDependencyMacro)
+
+# netmech 的 interface 里有 Threads::Threads（见 CMakeLists 第 6 节），
+# 导入的 target 引用了它，这里必须先把它找出来。
+if(NOT WIN32)
+    set(THREADS_PREFER_PTHREAD_FLAG ON)
+    find_dependency(Threads)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/netmechTargets.cmake")
+
+check_required_components(netmech)

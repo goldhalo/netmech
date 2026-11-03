@@ -312,6 +312,37 @@ docs/               设计文档与 API 说明
 
 ---
 
+## 在其他项目里使用（find_package）
+
+先安装（默认前缀：Linux `/usr/local`，Windows `C:/Program Files/netmech`）：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+cmake --install build                  # 加 --prefix <路径> 可改位置
+```
+
+然后在自己的工程里：
+
+```cmake
+find_package(netmech REQUIRED)
+target_link_libraries(app PRIVATE netmech::netmech)
+```
+
+不需要手写 `-I` / `-L` / `-l`：**头文件、自带的那份 Asio、`Threads`（Windows 上
+是 `ws2_32` / `mswsock`）都由导入的 target 带着走**。装出去的结构是：
+
+```
+<prefix>/include/netmech/                                # 本库头文件
+<prefix>/include/netmech/thirdparty/asio/include/        # 自带 Asio（公共头硬依赖）
+<prefix>/lib/libnetmech.a
+<prefix>/lib/cmake/netmech/netmech{Config,ConfigVersion,Targets}.cmake
+```
+
+安装前缀不在默认位置时，configure 阶段给 `-DCMAKE_PREFIX_PATH=<安装前缀>`。
+
+---
+
 ## 致谢
 
 本项目的实现与文档在 **DeepSeek-V4.1** 的协助下完成 —— 架构决策与验收由作者负责，
