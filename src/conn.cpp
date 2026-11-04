@@ -211,6 +211,7 @@ void Conn::Impl::do_accept_write(ConstBuf buf, std::size_t bytes)
     req.buf   = std::move(buf);
     req.bytes = bytes;
     writes.push(std::move(req));
+    write_requests.fetch_add(1, std::memory_order_relaxed);
     pump_write();
 }
 
@@ -257,6 +258,7 @@ void Conn::Impl::pump_write()
 
     writes.in_flight = true;
     writes.in_flight_count = count;
+    write_batches.fetch_add(1, std::memory_order_relaxed);
 
     try {
         // ★ 强自持：完成处理捕获 Impl 的强引用。
@@ -1079,6 +1081,16 @@ void Conn::close() noexcept
 bool Conn::is_open() const noexcept
 {
     return m_impl && !m_impl->closing.load(std::memory_order_acquire);
+}
+
+std::uint64_t Conn::write_requests() const noexcept
+{
+    return m_impl ? m_impl->write_requests.load(std::memory_order_relaxed) : 0;
+}
+
+std::uint64_t Conn::write_batches() const noexcept
+{
+    return m_impl ? m_impl->write_batches.load(std::memory_order_relaxed) : 0;
 }
 
 } // namespace netmech

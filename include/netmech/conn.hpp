@@ -276,6 +276,17 @@ public:
     /// @note 线程安全（内部为 atomic 读取）、noexcept。
     bool is_open() const noexcept;
 
+    /// 已受理的写请求笔数（每笔对应恰好一次 `on_write`）。诊断用。
+    ///
+    /// @note 与 `write_batches()` 一起看：`write_requests / write_batches`
+    ///       就是"平均每批合并了多少笔"。小包高频场景下这个比值能到十几；
+    ///       一直等于 1 说明发送队列从未积压（生产者没跑赢网络，或逐笔等待）。
+    /// @note 线程安全、noexcept。
+    [[nodiscard]] std::uint64_t write_requests() const noexcept;
+
+    /// 实际发起的底层 socket 写次数（一次 `async_write` = 一次批）。
+    [[nodiscard]] std::uint64_t write_batches() const noexcept;
+
     // -------------------------------------------------------------------------
     // 内部实现类型（仅供实现层使用，不属于公共 API）
     // -------------------------------------------------------------------------

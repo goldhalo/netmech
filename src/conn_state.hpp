@@ -404,6 +404,10 @@ struct Conn::Impl : public std::enable_shared_from_this<Conn::Impl> {
     // ---- 统计（诊断/测试）----
     std::atomic<std::uint64_t>     bytes_read{0};
     std::atomic<std::uint64_t>     bytes_written{0};
+    /// 已受理的写请求笔数（每笔对应恰好一次 on_write）。
+    std::atomic<std::uint64_t>     write_requests{0};
+    /// 实际发起的底层 socket 写次数。两者之比 ≈ 平均每批合并了多少笔。
+    std::atomic<std::uint64_t>     write_batches{0};
 };
 
 // -----------------------------------------------------------------------------
