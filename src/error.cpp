@@ -2,10 +2,15 @@
 //  netmech - 错误码类别实现
 // =============================================================================
 //  文件    : error.cpp
-//  用途    : 实现 net_category() / net_boost_category() / net_errc_message()
-//            这三个**非 inline** 函数（inline 的 make_error_code /
-//            make_boost_error_code / from_boost_error_code 由公共头提供，
-//            此处**不得**重复定义，否则 ODR 冲突）。
+//  用途    : 实现 net_category() / net_boost_category() / from_boost_error_code()
+//            这几个**非 inline** 函数（inline 的 make_error_code /
+//            make_boost_error_code 由公共头提供，此处**不得**重复定义）。
+//
+//  ★ 为什么 from_boost_error_code 的实现放在 .cpp
+//    它要拿 `asio::error::eof` 这类常量和 `std::error_code` 比相等，而这些
+//    常量只存在于 Asio 头里。放进公共头就意味着**装出去的 netmech 强制
+//    使用者装一套 Asio**；移到 .cpp 后，公共头只剩一个 `std::error_code`
+//    参数，语义与行为完全不变。
 //  编码    : UTF-8
 //
 //  ★ 两套 category 的关系
@@ -26,6 +31,10 @@
 
 #include <string>
 #include <system_error>
+
+// from_boost_error_code 的实现要拿 asio 的错误常量比相等。
+// 只在 .cpp 里引 —— 公共头一行 asio 都不出现。
+#include <asio/error.hpp>
 
 namespace netmech {
 
@@ -113,6 +122,50 @@ const std::error_category& net_boost_category() noexcept
 {
     static const NetBoostCategoryImpl instance;
     return instance;
+}
+
+std::optional<NetErrc> from_boost_error_code(const std::error_code& ec) noexcept
+{
+    if (!ec) {
+        return std::nullopt;
+    }
+
+    // 1) 本库自己产生的错误码：先认 net_category，再兼容历史的 boost 类别。
+    if (ec.category() == net_category()) {
+        const int ev = ec.value();
+        if (ev >= static_cast<int>(NetErrc::ok)
+            && ev <= static_cast<int>(NetErrc::datagram_truncated)) {
+            return static_cast<NetErrc>(ev);
+        }
+        return std::nullopt;
+    }
+    if (ec.category() == net_boost_category()) {
+        const int ev = ec.value() - kNetErrcBase;
+        if (ev >= static_cast<int>(NetErrc::ok)
+            && ev <= static_cast<int>(NetErrc::datagram_truncated)) {
+            return static_cast<NetErrc>(ev);
+        }
+        return std::nullopt;
+    }
+
+    // 2) 把常见的 Asio / 系统连接类错误归一到模块语义，便于上层统一处理。
+    if (ec == asio::error::eof
+        || ec == asio::error::connection_reset
+        || ec == asio::error::connection_aborted
+        || ec == asio::error::broken_pipe
+        || ec == asio::error::operation_aborted) {
+        return NetErrc::link_closed;
+    }
+    if (ec == asio::error::not_connected) {
+        return NetErrc::not_connected;
+    }
+    if (ec == asio::error::timed_out) {
+        return NetErrc::keepalive_timeout;
+    }
+    if (ec == asio::error::invalid_argument) {
+        return NetErrc::invalid_argument;
+    }
+    return std::nullopt;
 }
 
 } // namespace netmech

@@ -50,7 +50,7 @@
 #include <functional>
 #include <memory>
 
-#include <asio/ip/tcp.hpp>
+// 本头**不引 asio**：对外只暴露 netmech::Address，asio 的 endpoint 不出现在接口上。
 
 #include "netmech/common.hpp"
 #include "netmech/common.hpp"

@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <thread>
 
 #include "test_framework.hpp"

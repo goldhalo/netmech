@@ -45,7 +45,7 @@
 #include <optional>
 #include <vector>
 
-#include <asio/ip/tcp.hpp>
+// 本头**不引 asio**：只暴露 netmech::Address / std::error_code。
 
 #include "netmech/common.hpp"
 #include "netmech/linkable.hpp"

@@ -4,8 +4,8 @@
 //  文件    : netmech/common.hpp
 //  用途    : 定义 TCP / UDP 共用的类型：进程级初始化、地址、缓冲区视图、错误码。
 //            业务代码一般只 #include <netmech/netmech.hpp>，不必直接包含本头。
-//  依赖    : C++17 标准库 + <asio/error.hpp>（仅错误码常量，header-only，
-//            不引入 asio 的 socket/io_context，因此不会拖入网络栈）。
+//  依赖    : **只用 C++17 标准库**。公共头不包含任何 asio 头 —— 装出去的
+//            netmech 不需要 Asio 才能被使用（Asio 只在 src/ 里用）。
 //  编码    : UTF-8
 // =============================================================================
 #pragma once
@@ -18,8 +18,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-
-#include <asio/error.hpp>
 
 namespace netmech {
 
@@ -284,51 +282,8 @@ inline std::error_code make_boost_error_code(NetErrc e) noexcept
 ///         **注意**：`ec` 为假时**不返回** `NetErrc::ok`，以免混淆"无错误"与
 ///         "未知错误"两种情形。
 /// @note 线程安全、noexcept。
-inline std::optional<NetErrc> from_boost_error_code(
-    const std::error_code& ec) noexcept
-{
-    if (!ec) {
-        return std::nullopt;
-    }
-
-    // 1) 本库自己产生的 NetErrc 错误码：先认 net_category（当前唯一来源），
-    //    再兼容历史的 boost 类别（带 kNetErrcBase 偏移）。
-    if (ec.category() == net_category()) {
-        const int ev = ec.value();
-        if (ev >= static_cast<int>(NetErrc::ok)
-            && ev <= static_cast<int>(NetErrc::datagram_truncated)) {
-            return static_cast<NetErrc>(ev);
-        }
-        return std::nullopt;
-    }
-    if (ec.category() == net_boost_category()) {
-        const int ev = ec.value() - kNetErrcBase;
-        if (ev >= static_cast<int>(NetErrc::ok)
-            && ev <= static_cast<int>(NetErrc::datagram_truncated)) {
-            return static_cast<NetErrc>(ev);
-        }
-        return std::nullopt;
-    }
-
-    // 2) 把常见的 Asio/系统连接类错误归一到模块语义，便于上层统一处理。
-    if (ec == asio::error::eof
-        || ec == asio::error::connection_reset
-        || ec == asio::error::connection_aborted
-        || ec == asio::error::broken_pipe
-        || ec == asio::error::operation_aborted) {
-        return NetErrc::link_closed;
-    }
-    if (ec == asio::error::not_connected) {
-        return NetErrc::not_connected;
-    }
-    if (ec == asio::error::timed_out) {
-        return NetErrc::keepalive_timeout;
-    }
-    if (ec == asio::error::invalid_argument) {
-        return NetErrc::invalid_argument;
-    }
-    return std::nullopt;
-}
+[[nodiscard]] std::optional<NetErrc> from_boost_error_code(
+    const std::error_code& ec) noexcept;
 
 } // namespace netmech
 

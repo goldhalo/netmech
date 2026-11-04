@@ -102,15 +102,13 @@ add_library(netmech_compile_options INTERFACE)
 
 
 if(NETMECH_ASIO_INCLUDE_DIR)
-    # 公共头（conn.hpp / mechanism.hpp / linkable.hpp / common.hpp）直接
-    # #include <asio/...>，所以 Asio 的 include 目录是**使用者的必需项**，
-    # 不是我们自己的内部实现细节 → 必须随包安装，否则装了 netmech 也编不过。
+    # Asio **只在本仓编译自己时用**（src/ 里的实现），公共头一行 asio 都不引。
     #
-    # 装到 include/netmech/thirdparty/asio/include 而不是 include/ 根下：
-    # 后者会把 asio/ 和 asio.hpp 撒进全局头目录，和系统级 Asio 撞车。
+    # 所以这里只挂 BUILD_INTERFACE：对外既不导出 include 路径，也不随包安装
+    # Asio。使用者装了 netmech 就能用，不需要另外准备 Asio —— 这一点由
+    # `quality` 里那条"对外头文件不得包含 asio"的检查守着。
     target_include_directories(netmech_compile_options SYSTEM INTERFACE
-        $<BUILD_INTERFACE:${NETMECH_ASIO_INCLUDE_DIR}>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/netmech/thirdparty/asio/include>)
+        $<BUILD_INTERFACE:${NETMECH_ASIO_INCLUDE_DIR}>)
 endif()
 
 target_compile_definitions(netmech_compile_options INTERFACE
@@ -317,11 +315,9 @@ endif()
 # 编译选项载体是 PUBLIC 依赖，导出时会被引用到，必须一起进导出集
 install(TARGETS netmech_compile_options EXPORT netmechTargets)
 
-# 自带 Asio（公共头的硬依赖，见上面 target_include_directories 的说明）
-if(NETMECH_ASIO_INCLUDE_DIR)
-    install(DIRECTORY "${NETMECH_ASIO_INCLUDE_DIR}/"
-            DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/netmech/thirdparty/asio/include")
-endif()
+# 不安装 Asio：公共头不依赖它（见上面 target_include_directories 的说明）。
+# 之前这里会把整份 asio 装到 include/netmech/thirdparty/asio，装出来的包
+# 又多 2 万多个头文件 —— 那是"公共头引了 asio"时期的遗留。
 
 install(EXPORT netmechTargets
         FILE netmechTargets.cmake

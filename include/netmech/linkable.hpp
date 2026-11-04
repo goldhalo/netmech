@@ -37,7 +37,7 @@
 
 #include <memory>
 
-#include <asio/ip/tcp.hpp>
+// 本头**不引 asio**：回调参数都是 netmech::Conn，asio 类型不出现在接口上。
 
 #include "netmech/common.hpp"
 

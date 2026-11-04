@@ -15,6 +15,7 @@
 #include <netmech/net.hpp>
 
 #include <chrono>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
