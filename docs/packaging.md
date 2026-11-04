@@ -82,6 +82,31 @@ IoPool::global()        → 首次用到时才建，线程数 = n ? n : hardware
 `{ip, port, scope}`，构造/比较/`to_string()` 都是值语义，**没有 asio、没有隐藏状态**。
 所以"复制一个自己的 Endpoint"成本极低，**不需要**为了它做 pimpl。
 
+### 2.4 第三方 vendored 代码怎么处理（已定）
+
+httpmech 和 rtspmech 都 vendored 了 **picohttpparser**（MIT）。原先它是独立的
+`libpicohttpparser.a`，于是使用方要写：
+
+```bash
+g++ app.cpp -lhttpmech -lpicohttpparser     # ← 库内部用的东西，凭什么让使用方买单
+```
+
+库里用、库里就该收干净。**最终形态（已实施）**：
+
+| 做法 | 说明 |
+|---|---|
+| 编进同一个 target | `src/pico_impl.cpp` 里 `#include "../thirdparty/picohttpparser/picohttpparser.c"` 以 C++ 方式编入（pico 是干净的 C，上游也建议可 C++ 编译） |
+| 符号加前缀 | `src/pico_rename.hpp` 把 5 个全局 C 符号改成 `httpmech_phr_*` / `rtspmech_phr_*`——否则两个库同时链接必然 `multiple definition` |
+| 头不外露 | pico 的 include 目录改成 **PRIVATE**，不再装进 `include/<pkg>/thirdparty/` |
+| 许可证照发 | MIT 要求分发二进制时保留声明，所以 `LICENSE.picohttpparser` 随 `share/doc/<pkg>/` 安装 |
+
+结果：`<prefix>/lib/` 下**只有一个 .a**，`<prefix>/include/<pkg>/` 下只有本库的头。
+
+> 验证手法：用 `-Wl,--whole-archive` 把 httpmech 和 rtspmech 两个 .a 的全部
+> 目标文件强拉进同一个可执行文件——不报重复符号，才算真的隔离干净。
+
+这条同样适用于将来任何 vendored 代码（比如哪天要内嵌 zlib）。
+
 ---
 
 ## 3. 方案对比
