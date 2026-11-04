@@ -180,7 +180,21 @@ public:
                 accepted.fetch_add(1);
             }
         }
-        return true;   // 不读
+
+        // 必须挂一笔读 —— 这是库里写明的契约：TCP 的 FIN/RST 只有在下一次
+        // read 时才会被感知。
+        //
+        // 本用例早先**不读**，只靠写失败来判断连接已死。本机（回环 + 大
+        // send buffer）8 笔 16 KiB 全部进了内核缓冲，写回调全部成功；但连接
+        // 其实已经被对端关掉了，没有读就没人发现 → `closed` 永远等不到，
+        // 在 CI 上稳定卡满 5 秒超时。
+        m_rx = std::make_shared<std::vector<char>>(4096);
+        Buf rb;
+        rb.owner = m_rx;
+        rb.data  = m_rx->data();
+        rb.size  = m_rx->size();
+        ep->read(rb);
+        return true;
     }
 
     void on_read(std::error_code, Buf, std::size_t) override {}
@@ -196,6 +210,7 @@ public:
     void on_close() override { closed.fetch_add(1); }
 
     std::shared_ptr<Conn>  m_ep;
+    std::shared_ptr<std::vector<char>> m_rx;   ///< 读缓冲（保活到读回调）
     std::vector<std::uint8_t> m_block;
     std::atomic<int>       accepted{0};
     std::atomic<int>       callbacks{0};
