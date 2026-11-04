@@ -6,6 +6,7 @@
 
 > 基于 **C++17 + 独立 Asio** 的 TCP / UDP 通信库。
 > **零第三方依赖**：Asio 随仓库提供，`git clone` 即可构建，产物不链接任何第三方 DLL。
+> **对外头文件不依赖 Asio** —— 装出去的包只有 9 个头文件，使用者不需要自备 Asio。
 
 ---
 
@@ -13,7 +14,7 @@
 
 | | |
 |---|---|
-| **零依赖** | 独立 Asio（header-only）随仓库提供，不需要 Boost，不需要 vcpkg |
+| **零依赖** | 独立 Asio（header-only）随仓库提供，不需要 Boost，不需要 vcpkg；**它只在本仓编译时用，不随包安装** |
 | **一个对象一条连接** | TCP 是 `Conn`，UDP 是 `UdpEndpoint`，没有隐藏的"会话表"要维护 |
 | **回调天然串行** | 每条连接绑定一个 `io_context`，**1 context = 1 线程**，同一连接的回调不会并发 |
 | **反压语义明确** | `write()` 返回 `false` 表示"没受理"，不是出错，也**不会断链** |
@@ -329,15 +330,19 @@ find_package(netmech REQUIRED)
 target_link_libraries(app PRIVATE netmech::netmech)
 ```
 
-不需要手写 `-I` / `-L` / `-l`：**头文件、自带的那份 Asio、`Threads`（Windows 上
-是 `ws2_32` / `mswsock`）都由导入的 target 带着走**。装出去的结构是：
+不需要手写 `-I` / `-L` / `-l`：**头文件与 `Threads`（Windows 上是 `ws2_32` /
+`mswsock`）都由导入的 target 带着走**。装出去的结构是：
 
 ```
-<prefix>/include/netmech/                                # 本库头文件
-<prefix>/include/netmech/thirdparty/asio/include/        # 自带 Asio（公共头硬依赖）
+<prefix>/include/netmech/*.hpp                           # 只有本库的 9 个头文件
 <prefix>/lib/libnetmech.a
 <prefix>/lib/cmake/netmech/netmech{Config,ConfigVersion,Targets}.cmake
 ```
+
+> **包里没有 Asio。** 公共头一行 `#include <asio/...>` 都没有 —— Asio 只用在
+> `src/` 的实现里，静态库里已经编好了。想确认的话：装完之后随便写个只给
+> `<prefix>/include` 的 `-I`、不给 Asio 的消费者，能编过、能链上就是对的。
+> CI 的 `quality` 里有一条检查守着这个边界（`include/` 下出现 asio 就红）。
 
 安装前缀不在默认位置时，configure 阶段给 `-DCMAKE_PREFIX_PATH=<安装前缀>`。
 
