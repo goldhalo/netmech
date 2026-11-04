@@ -158,11 +158,23 @@ target_include_directories(rtpmech INTERFACE
 | 库 | 要做的事 | 工作量 |
 |---|---|---|
 | **modbusmech** | 无（已是目标形态）。只需补文档：怎么控 io 线程数 | 0.5 天（文档） |
-| **httpmech** | ① 新增 `httpmech::Endpoint{host,port}` 替代 `netmech::Address`（**5 处**）；② `create(mech, …)` 改成 `create(cfg, …)` 内部自建，另留 `create_with(mech, …)` 给需要共享池的场景；③ `WebSocketSession::remote()` 返回自己的 Endpoint | 1–2 天 |
+| **httpmech** | ✅ **已完成**（2026-11-04，`323259f`）。做法见下方「已实施的做法」 | — |
 | **rtpmech** | ① `Endpoint` 替换 `Address`（config + handler 参数，**8 处**）；② `session.hpp` 不再引 `<netmech/udp.hpp>`——`UdpEndpoint` 已在 Impl 里（改成前向声明 + 组合）；③ `rtp_packet.hpp` 现在整份引 `<netmech/net.hpp>`（注释说"仅用地址类型"），换成自己的 `Endpoint` 后这行可以整条删掉 | 1–2 天 |
 | **rtspmech** | `RtspSession : public netmech::ConnHandler` 是硬耦合，两条路：<br>**(a)** 保留继承，但把 `ConnHandler` 的定义搬到自己头里（不现实，等于复制接口）<br>**(b)** 改成**组合 + 内部适配器**：`RtspSession` 不再继承，netmech 的 handler 变成 `detail::ConnAdapter`，对外只暴露 `RtspSession` 自己的 `send_*` / `on_*` | **2–3 天**，需要改调用方（`on_accept` 里返回的对象变了） |
 
 改造顺序建议：**httpmech → rtpmech → rtspmech**（由易到难，前两个能给第三个探路）。
+
+### 已实施的做法（httpmech，可照抄）
+
+| 步骤 | 具体做法 |
+|---|---|
+| 端点类型 | 新增 `httpmech::Endpoint{std::string host; uint16_t port;}`。**解析/格式化委托给 `netmech::Address`**（`src/endpoint.cpp`），不复制地址解析逻辑；公共头只留 `string` + `int` |
+| 桥接 | `src/net_bridge.hpp`：`to_address(Endpoint)` / `from_address(Address)` 两个 inline 函数，只有 .cpp 看得见 |
+| 依赖注入 | `create(cfg, …)` 内部 `netmech::Mechanism::create()`；另留 `create_with_mechanism(mech, …)`，只对 `netmech::Mechanism` 做**前向声明** |
+| 护栏 | CI quality 加一条：`include/` 下出现 `#include <netmech/...>` 就红 |
+
+验证手法（同样可复用）：只给 `-I<pkg>/include`、**不给 netmech** 编译 README 里的
+完整示例，`-Wall -Wextra -Werror` 通过。
 
 ---
 
