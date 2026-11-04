@@ -160,9 +160,20 @@ target_include_directories(rtpmech INTERFACE
 | **modbusmech** | 无（已是目标形态）。只需补文档：怎么控 io 线程数 | 0.5 天（文档） |
 | **httpmech** | ✅ **已完成**（2026-11-04，`323259f`）。做法见下方「已实施的做法」 | — |
 | **rtpmech** | ✅ **已完成**（2026-11-04，`f525348`）。比 httpmech 多一个类型：`netmech::ConstBuf` 也要换成本库的 `rtpmech::ConstBuf{owner,data,size}`（发送接口的载荷入参） | — |
-| **rtspmech** | `RtspSession : public netmech::ConnHandler` 是硬耦合，两条路：<br>**(a)** 保留继承，但把 `ConnHandler` 的定义搬到自己头里（不现实，等于复制接口）<br>**(b)** 改成**组合 + 内部适配器**：`RtspSession` 不再继承，netmech 的 handler 变成 `detail::ConnAdapter`，对外只暴露 `RtspSession` 自己的 `send_*` / `on_*` | **2–3 天**，需要改调用方（`on_accept` 里返回的对象变了） |
+| **rtspmech** | ✅ **已完成**（2026-11-04，`5bcf9a8`）。`RtspSession` 不再继承 `netmech::ConnHandler`，netmech 侧换成内部的 `detail::ConnAdapter`；对外新增 `RtspServer` + `RtspAcceptor`，应用不再实现 `netmech::Linkable` | — |
 
 改造顺序建议：**httpmech → rtpmech → rtspmech**（由易到难，前两个能给第三个探路）。
+
+### 四个库都已实施完（2026-11-04）
+
+| 库 | commit | 关键动作 |
+|---|---|---|
+| httpmech | `323259f` | `Endpoint` + `create(cfg,…)` / `create_with_mechanism` |
+| rtpmech | `f525348` | 同上，另加 `rtpmech::ConstBuf` 替掉 `netmech::ConstBuf` |
+| rtspmech | `5bcf9a8` | **取消 `RtspSession` 对 `ConnHandler` 的继承**（组合 + 内部适配器），新增 `RtspServer`/`RtspAcceptor` |
+| modbusmech | 一直是 | 本来就是自包含形态，无需改动 |
+
+四个仓的 CI 都有护栏：`include/` 下出现 `#include <netmech/...>` 就红。
 
 ### 已实施的做法（httpmech，可照抄）
 
