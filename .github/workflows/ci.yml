@@ -56,6 +56,14 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Windows / MSVC
+  #
+  # 生成器用 Ninja 而**不用** Visual Studio 生成器：后者的探测在 runner 镜像
+  # 升级后接连失效（"could not find any instance of Visual Studio"、
+  # "Failed to run MSBuild command ... no such file"）。msvc-dev-cmd 摆好 cl
+  # 的环境再走 Ninja，稳定且日志直白。
+  #
+  # 失败时把 cmake 的关键错误用 ::error:: 打到 annotation 上 ——
+  # Actions 的原始日志要通过 API 取需要仓库管理员权限，annotation 是公开的。
   # ---------------------------------------------------------------------------
   windows:
     name: Windows / MSVC / ${{ matrix.build_type }}
@@ -68,19 +76,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 配置 MSVC 环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: 配置
+        shell: pwsh
         run: |
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-                -DNETMECH_WARNINGS_AS_ERRORS=ON
+          $out  = cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DNETMECH_WARNINGS_AS_ERRORS=ON 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -ne 0) {
+            $lines = $out -split "`r?`n"
+            $idx = -1
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match 'CMake Error') { $idx = $i; break }
+            }
+            if ($idx -ge 0) {
+              $end  = [Math]::Min($idx + 7, $lines.Count - 1)
+              $errs = ($lines[$idx..$end] | Where-Object { $_.Trim() -ne '' }) -join ' | '
+            } else {
+              $errs = (($lines | Where-Object { $_.Trim() -ne '' }) | Select-Object -Last 8) -join ' | '
+            }
+            Write-Host "::error title=Windows configure failed::$errs"
+            exit 1
+          }
 
       - name: 构建
-        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+        shell: pwsh
+        run: |
+          $out  = cmake --build build --parallel 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -ne 0) {
+            $line = ($out -split "`r?`n" | Where-Object { $_ -match 'error C|: fatal|error MSB' } | Select-Object -First 2) -join ' | '
+            Write-Host "::error title=Windows build failed::$line"
+            exit 1
+          }
 
       - name: 测试
-        run: |
-          & ".\build\bin\${{ matrix.build_type }}\netmech_ut.exe"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: pwsh
+        run: |
+          $exe = ".\build\bin\netmech_ut.exe"
+          if (-not (Test-Path $exe)) { Write-Host "::error::找不到 $exe"; exit 1 }
+          $out  = & $exe 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -ne 0) {
+            $line = ($out -split "`r?`n" | Where-Object { $_ -match 'FAIL' } | Select-Object -First 3) -join ' | '
+            Write-Host "::error title=Windows 单测失败::$line"
+            exit 1
+          }
 
   # ---------------------------------------------------------------------------
   # 质量门禁
