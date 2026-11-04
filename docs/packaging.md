@@ -159,7 +159,7 @@ target_include_directories(rtpmech INTERFACE
 |---|---|---|
 | **modbusmech** | 无（已是目标形态）。只需补文档：怎么控 io 线程数 | 0.5 天（文档） |
 | **httpmech** | ✅ **已完成**（2026-11-04，`323259f`）。做法见下方「已实施的做法」 | — |
-| **rtpmech** | ① `Endpoint` 替换 `Address`（config + handler 参数，**8 处**）；② `session.hpp` 不再引 `<netmech/udp.hpp>`——`UdpEndpoint` 已在 Impl 里（改成前向声明 + 组合）；③ `rtp_packet.hpp` 现在整份引 `<netmech/net.hpp>`（注释说"仅用地址类型"），换成自己的 `Endpoint` 后这行可以整条删掉 | 1–2 天 |
+| **rtpmech** | ✅ **已完成**（2026-11-04，`f525348`）。比 httpmech 多一个类型：`netmech::ConstBuf` 也要换成本库的 `rtpmech::ConstBuf{owner,data,size}`（发送接口的载荷入参） | — |
 | **rtspmech** | `RtspSession : public netmech::ConnHandler` 是硬耦合，两条路：<br>**(a)** 保留继承，但把 `ConnHandler` 的定义搬到自己头里（不现实，等于复制接口）<br>**(b)** 改成**组合 + 内部适配器**：`RtspSession` 不再继承，netmech 的 handler 变成 `detail::ConnAdapter`，对外只暴露 `RtspSession` 自己的 `send_*` / `on_*` | **2–3 天**，需要改调用方（`on_accept` 里返回的对象变了） |
 
 改造顺序建议：**httpmech → rtpmech → rtspmech**（由易到难，前两个能给第三个探路）。
