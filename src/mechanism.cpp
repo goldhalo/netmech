@@ -99,6 +99,10 @@ struct Mechanism::Impl {
     /// 判重（见 Mechanism::listen() 第 2.5 步）。
     std::map<std::string, std::string>                bound_keys;
 
+    /// 入参键 → **实际绑定地址**（Address 形态，供 listening_address() 查回
+    /// listen(..:0) 时系统分配的端口）。与 bound_keys 同生同灭。
+    std::map<std::string, Address>                    bound_addr;
+
     /// 全局单一订阅者（weak，避免悬挂）。
     mutable std::mutex                                linkable_mutex;
     std::weak_ptr<Linkable>                           global_linkable;
@@ -354,6 +358,7 @@ Mechanism::~Mechanism()
         std::lock_guard<std::mutex> lock(m_impl->listeners_mutex);
         m_impl->listeners.clear();
         m_impl->bound_keys.clear();   // 与 listeners 同步（见 close_all 的说明）
+        m_impl->bound_addr.clear();
     }
     {
         std::lock_guard<std::mutex> lock(m_impl->endpoints_mutex);
@@ -601,8 +606,139 @@ std::error_code Mechanism::listen(const Address& addr,
         }
         it->second = std::move(acc);
         m_impl->bound_keys.emplace(key, bound_key);
+        m_impl->bound_addr.emplace(key, detail::from_asio_endpoint(bound));
     }
     return error_code_t{};
+}
+
+// -----------------------------------------------------------------------------
+//  停止单个监听 / 查询实际绑定地址
+// -----------------------------------------------------------------------------
+
+std::error_code Mechanism::unlisten(const Address& addr)
+{
+    if (!m_impl) {
+        return make_boost_error_code(NetErrc::not_initialized);
+    }
+
+    const endpoint_t ep = detail::to_asio_endpoint(addr);
+
+    std::shared_ptr<Acceptor> victim;
+    std::string               key;
+
+    {
+        std::lock_guard<std::mutex> lock(m_impl->listeners_mutex);
+
+        // 1) 先按"入参键"找：显式端口的 listen 直接命中
+        const std::string want = Impl::key_of(ep);
+
+        auto it = m_impl->listeners.find(want);
+        if (it != m_impl->listeners.end()) {
+            key    = it->first;
+            victim = it->second;
+            m_impl->listeners.erase(it);
+        } else if (ep.port() == 0) {
+            // 端口 0 的入参：按 "ip:0#<seq>" 前缀找，**仅在唯一时**动手。
+            // 多个 :0 监听并存时，"停哪个"没有正确答案，宁可不动。
+            const std::string prefix = want + "#";
+            auto              only   = m_impl->listeners.end();
+            int               matches = 0;
+            for (auto lit = m_impl->listeners.begin(); lit != m_impl->listeners.end(); ++lit) {
+                if (lit->first.compare(0, prefix.size(), prefix) == 0) {
+                    only = lit;
+                    ++matches;
+                }
+            }
+            if (matches == 1) {
+                key    = only->first;
+                victim = only->second;
+                m_impl->listeners.erase(only);
+            }
+        }
+        if (key.empty()) {
+            // 2) 再按实际绑定地址反查：支持 listen(..:0) 之后传真实地址
+            for (const auto& kv : m_impl->bound_addr) {
+                if (kv.second == addr) {
+                    key = kv.first;
+                    auto lit = m_impl->listeners.find(key);
+                    if (lit != m_impl->listeners.end()) {
+                        victim = lit->second;
+                        m_impl->listeners.erase(lit);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (key.empty()) {
+            return error_code_t{};   // 幂等：本来就没在监听
+        }
+        m_impl->bound_keys.erase(key);
+        m_impl->bound_addr.erase(key);
+    }
+
+    // 锁外关闭：Acceptor::close() 会 post 到 io 线程，不在锁里做
+    if (victim) {
+        victim->close();
+    }
+    return error_code_t{};
+}
+
+std::optional<Address> Mechanism::listening_address(const Address& requested) const
+{
+    if (!m_impl) {
+        return std::nullopt;
+    }
+    const endpoint_t ep = detail::to_asio_endpoint(requested);
+
+    std::lock_guard<std::mutex> lock(m_impl->listeners_mutex);
+
+    const std::string want = Impl::key_of(ep);
+
+    auto it = m_impl->bound_addr.find(want);
+    if (it != m_impl->bound_addr.end()) {
+        return it->second;
+    }
+    // 端口 0 的入参：登记的键是 "ip:0#<seq>"（见 listen 里 ephemeral 的处理）。
+    // 只有在**恰好唯一**时才敢回答 —— 同一 IP 上开了两个 :0 监听时，
+    // "问 :0 是哪个" 本身就没有唯一答案，此时返回 nullopt，
+    // 让调用方改用 listening_addresses() 或传实际地址。
+    if (ep.port() == 0) {
+        const std::string prefix = want + "#";
+        const Address*    found  = nullptr;
+        for (const auto& kv : m_impl->bound_addr) {
+            if (kv.first.compare(0, prefix.size(), prefix) == 0) {
+                if (found != nullptr) {
+                    return std::nullopt;   // 多个匹配：有歧义
+                }
+                found = &kv.second;
+            }
+        }
+        if (found != nullptr) {
+            return *found;
+        }
+    }
+    // 反查：允许直接用实际绑定地址问
+    for (const auto& kv : m_impl->bound_addr) {
+        if (kv.second == requested) {
+            return kv.second;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<Address> Mechanism::listening_addresses() const
+{
+    std::vector<Address> out;
+    if (!m_impl) {
+        return out;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->listeners_mutex);
+    out.reserve(m_impl->bound_addr.size());
+    for (const auto& kv : m_impl->bound_addr) {
+        out.push_back(kv.second);
+    }
+    return out;
 }
 
 // -----------------------------------------------------------------------------

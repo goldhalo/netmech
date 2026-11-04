@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include <asio/ip/tcp.hpp>
 
@@ -199,6 +200,48 @@ public:
                                      std::weak_ptr<Linkable> linkable,
                                      std::uint32_t backlog = kDefaultBacklog,
                                      std::shared_ptr<void> user_ctx = nullptr);
+
+    /// 停止**某一个**监听器。
+    ///
+    /// 作用范围刻意做小：
+    ///  - 只停这一个 accept 循环，同一实例上的其它监听器不受影响；
+    ///  - **不动已经建立的连接** —— 它们属于业务层，什么时候关由业务决定
+    ///    （想一起关就在自己的会话表里逐个 close）。
+    ///
+    /// 加这个接口的原因：`close_all()` 是"整台机器断电"，而业务上更需要
+    /// "关掉我这个 HTTP 服务"，两者不该共用一个开关。
+    ///
+    /// @param[in] local 当初 `listen()` 传入的地址；也可以传**实际绑定地址**
+    ///                  （`listen(..:0)` 之后用 `listening_address()` 取到的那个）。
+    /// @return 空 = 已停止（**幂等**：本来就没在监听也算成功）；
+    ///         `NetErrc::invalid_argument` = 地址非法。
+    ///
+    /// @note 传端口 0 的入参时同样要求"唯一匹配"：同一 IP 上并存多个 `:0`
+    ///       监听时不做任何动作（避免猜错对象）。
+    ///
+    /// @par 线程安全性
+    ///  - 可从任意线程调用；不会阻塞等待 accept 循环退出（异步收敛）。
+    ///  - 与 `listen()` 并发调用同一地址时，两者之一生效，不会出现半个监听器。
+    std::error_code unlisten(const Address& local);
+
+    /// 查询某个监听的**实际**绑定地址。
+    ///
+    /// 用途：`listen(Address{"0.0.0.0", 0})` 由系统分配端口后，把真实端口读回来
+    /// （日志、测试、服务发现都要它）。
+    ///
+    /// @param[in] requested 当初 `listen()` 传入的地址；
+    ///                      也可以传实际绑定地址做反查。
+    /// @return 找到返回实际地址（含系统分配的端口）；没有在监听返回 `std::nullopt`。
+    ///
+    /// @note **端口 0 的入参要求"唯一匹配"**：同一 IP 上并存两个 `:0` 监听时，
+    ///       "问 :0 对应哪个端口"本身没有唯一答案，此时返回 `nullopt`。
+    ///       需要逐个确认请用 `listening_addresses()`，或直接传实际地址。
+    ///
+    /// @note 线程安全。
+    [[nodiscard]] std::optional<Address> listening_address(const Address& requested) const;
+
+    /// 当前在监听的**全部**实际地址（诊断 / 测试用）。
+    [[nodiscard]] std::vector<Address> listening_addresses() const;
 
     // -------------------------------------------------------------------------
     // 客户端
