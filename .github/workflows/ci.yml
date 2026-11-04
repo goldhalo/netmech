@@ -7,6 +7,9 @@ on:
     branches: [ main, master, develop ]
   workflow_dispatch:
 
+# netmech 是这一族库的地基，六个仓（netmech / modbusmech / rtspmech /
+# rtpmech / mpegmech / httpmech）用同一套 CI 结构，方便对照。
+
 jobs:
   # ---------------------------------------------------------------------------
   # Linux / GCC + Clang
@@ -23,14 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装编译器
+      - name: 安装工具
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build
           if [ "${{ matrix.compiler }}" = "gcc" ]; then
             sudo apt-get install -y g++
           else
-            sudo apt-get install -y clang++
+            # 用 runner 预装的 clang：apt 装 clang++ 常因版本被钉死而失败
+            clang++ --version || { echo "::error::runner 上没有预装 clang++"; exit 1; }
           fi
 
       - name: 配置
@@ -44,26 +48,33 @@ jobs:
                 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
                 -DNETMECH_WARNINGS_AS_ERRORS=ON
 
+      # 构建失败时把第一行错误打进 annotation：
+      # Actions 原始日志要通过 API 取需要管理员权限，annotation 是公开的。
       - name: 构建
-        run: cmake --build build --parallel
+        run: |
+          set +e
+          cmake --build build --parallel 2>&1 | tee /tmp/build.log
+          rc=${PIPESTATUS[0]}
+          if [ $rc -ne 0 ]; then
+            line=$(grep -m1 -E "error:" /tmp/build.log | cut -c1-300)
+            [ -z "$line" ] && line=$(grep -m1 -E "warning:" /tmp/build.log | cut -c1-300)
+            echo "::error title=构建失败::$line"
+            exit 1
+          fi
 
       - name: 测试
         run: ctest --test-dir build --output-on-failure
 
-      - name: 直接运行测试（获取详细输出）
+      - name: 直接运行测试（失败时取详细输出）
         if: failure()
         run: ./build/bin/netmech_ut --verbose || true
 
   # ---------------------------------------------------------------------------
   # Windows / MSVC
   #
-  # 生成器用 Ninja 而**不用** Visual Studio 生成器：后者的探测在 runner 镜像
-  # 升级后接连失效（"could not find any instance of Visual Studio"、
-  # "Failed to run MSBuild command ... no such file"）。msvc-dev-cmd 摆好 cl
-  # 的环境再走 Ninja，稳定且日志直白。
-  #
-  # 失败时把 cmake 的关键错误用 ::error:: 打到 annotation 上 ——
-  # Actions 的原始日志要通过 API 取需要仓库管理员权限，annotation 是公开的。
+  # 用 Ninja 而不用 Visual Studio 生成器：后者的探测在 runner 镜像升级后
+  # 接连失效（找不到 VS、或 MSBuild 起不来）。msvc-dev-cmd 摆好 cl 的环境
+  # 再走 Ninja 更稳。
   # ---------------------------------------------------------------------------
   windows:
     name: Windows / MSVC / ${{ matrix.build_type }}
@@ -141,12 +152,16 @@ jobs:
 
       - name: 检查禁止的 C++20 特性
         run: |
-          echo "检查源码中是否出现 C++20 构造..."
           FAIL=0
+          # 只看代码，跳过纯注释行（注释里提到 std::span / boost:: 是正常的）
           for pat in 'co_await' 'co_return' 'co_yield' 'std::span' 'std::format' \
                      'std::jthread' 'std::atomic_ref' '\bconcept\b' '\branges::' '<=>'; do
-            if grep -rEn "$pat" include/ src/ example/ test/ --include='*.hpp' --include='*.cpp' 2>/dev/null; then
+            hits=$(grep -rEn "$pat" include/ src/ example/ test/ \
+                     --include='*.hpp' --include='*.cpp' 2>/dev/null \
+                   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+            if [ -n "$hits" ]; then
               echo "❌ 发现禁止的构造: $pat"
+              echo "$hits"
               FAIL=1
             fi
           done
@@ -155,9 +170,11 @@ jobs:
 
       - name: 检查不得引入 Boost 依赖
         run: |
-          if grep -rn 'boost::' include/ src/ example/ test/ \
-               --include='*.hpp' --include='*.cpp' | grep -v '^\s*//' | grep -v '注释'; then
-            echo "❌ 发现 boost:: 引用（本项目不依赖 Boost）"
+          # 只看 #include：注释里写 boost:: 是在讲"为什么不用它"。
+          # 注意 asio 不在此列 —— 本库用的就是 thirdparty 里那份独立 Asio。
+          if grep -rnE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<(boost|openssl)/' \
+               include/ src/ example/ test/ --include='*.hpp' --include='*.cpp'; then
+            echo "❌ 发现有 boost / openssl 的 #include（本库只用 thirdparty 里的独立 Asio）"
             exit 1
           fi
           echo "✅ 无 Boost 依赖"
@@ -173,3 +190,19 @@ jobs:
             exit 1
           fi
           echo "✅ thirdparty 完整"
+
+      - name: 检查每个对外头文件可单独包含
+        run: |
+          sudo apt-get update && sudo apt-get install -y g++
+          FAIL=0
+          for h in include/netmech/*.hpp; do
+            name=$(basename "$h" .hpp)
+            printf '#include <netmech/%s.hpp>\nint main(){return 0;}\n' "$name" > /tmp/one.cpp
+            if ! g++ -std=c++17 -fsyntax-only -Wall -Wextra \
+                 -Iinclude -Ithirdparty/asio/include /tmp/one.cpp; then
+              echo "❌ $name.hpp 不能单独包含"
+              FAIL=1
+            fi
+          done
+          if [ $FAIL -eq 1 ]; then exit 1; fi
+          echo "✅ 全部头文件自包含"
