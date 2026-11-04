@@ -159,3 +159,24 @@ NETMECH_TEST(unlisten_keeps_established_connections)
 
     EXPECT_OK(mech->listen(Address{"127.0.0.1", bound->port()}, lb, 8));
 }
+
+// ---------------------------------------------------------------------------
+// 5. 默认关闭 linger_zero（写应答后立即关闭的协议靠这条）
+// ---------------------------------------------------------------------------
+NETMECH_TEST(linger_zero_defaults_to_false)
+{
+    // 背景：linger_zero = true 会把 SO_LINGER 设成 {1,0}，close() 直接发 RST，
+    // 丢掉还没进内核的数据。对 HTTP 这种"写应答 → 关连接"的协议就是
+    // **静默丢包**：客户端拿不到响应，服务端也没有任何错误。
+    // 这个默认值是刻意选的，用一条用例钉死它，避免哪次改配置时被翻回来。
+    const Mechanism::Config cfg;
+    CHECK(!cfg.linger_zero);
+
+    auto mech = Mechanism::create();
+    REQUIRE(mech != nullptr);
+    CHECK(!mech->linger_zero());
+
+    auto mech2 = Mechanism::create(Mechanism::Config{});
+    REQUIRE(mech2 != nullptr);
+    CHECK(!mech2->linger_zero());
+}

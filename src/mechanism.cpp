@@ -727,6 +727,14 @@ std::optional<Address> Mechanism::listening_address(const Address& requested) co
     return std::nullopt;
 }
 
+bool Mechanism::linger_zero() const noexcept
+{
+    if (!m_impl) {
+        return false;
+    }
+    return m_impl->cfg.linger_zero;
+}
+
 std::vector<Address> Mechanism::listening_addresses() const
 {
     std::vector<Address> out;
