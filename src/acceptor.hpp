@@ -126,7 +126,9 @@ private:
     //   `pool_` 持**强引用**（不是 weak）：`ioc_` 是裸引用，只有池活着它才
     //   有效。"弱引用 + 裸引用"是悬垂引用的温床 —— 这里直接用强引用把
     //   不变量编码进类型里。
-    IoPool*                                              pool_;       ///< 进程级单例，永不为空；io_context 生存期由它保证
+    // 这个字段**只用于控制析构顺序**（声明在最前 = 最后析构），代码里没有读取点。
+    // clang 的 -Wunused-private-field 会因此报错，标 maybe_unused 说明"是故意的"。
+    [[maybe_unused]] IoPool*                             pool_;       ///< 进程级单例，永不为空；io_context 生存期由它保证
     io_context_t&                                         ioc_;       ///< 引用 pool_ 持有的 context（由 pool_ 保证有效）
     asio::ip::tcp::acceptor                              acceptor_;
     timer_t                                               retry_timer_;

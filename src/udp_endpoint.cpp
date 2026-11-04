@@ -39,7 +39,9 @@ std::atomic<std::uint64_t>& udp_id_counter() noexcept
     return counter;
 }
 
-constexpr std::size_t kMinRecvCapacity = 64;
+/// 收包缓冲下限。当前实现直接把配置值用满，没有做下限钳制 ——
+/// 常量留作对照，标 maybe_unused 免得 clang 报 -Wunused-const-variable。
+[[maybe_unused]] constexpr std::size_t kMinRecvCapacity = 64;
 
 } // namespace
 
