@@ -363,6 +363,16 @@ std::uint64_t UdpEndpoint::datagrams_sent() const noexcept
     return m_impl ? m_impl->sent.load(std::memory_order_relaxed) : 0;
 }
 
+void UdpEndpoint::post(std::function<void()> fn) noexcept
+{
+    if (!m_impl || !fn) {
+        return;
+    }
+    auto self = m_impl;   // 持住 Impl：fn 执行前端点不会被回收
+    // dispatch：已在该 io 线程则同步执行，否则排队。
+    asio::dispatch(self->io, [self, fn = std::move(fn)]() mutable { fn(); });
+}
+
 void UdpEndpoint::set_timer(std::chrono::milliseconds interval,
                               std::weak_ptr<void>     owner,
                               std::function<void()>   cb)
