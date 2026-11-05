@@ -215,12 +215,19 @@ error_code_t Acceptor::open(const endpoint_t& local, std::uint32_t backlog)
 
 void Acceptor::close() noexcept
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!opened_ || stopping_) {
-        return;   // 幂等：未打开或已在停止中
+    // ★ 锁只护"标志翻转"这一小段：**绝不能把等待也圈在锁里**。
+    //   io 线程的 handle_accept 会拿这把锁；如果调用线程持锁自旋等 close_impl，
+    //   而 close_impl 之前的那个 handle_accept 又在等锁 → 互等，等到自旋超时
+    //   就"close 没做完但函数返回了"，紧接着在同一端口 listen 会撞
+    //   address_in_use（实测：1/15 概率挂在 unlisten 之后的重绑上）。
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!opened_ || stopping_) {
+            return;   // 幂等：未打开或已在停止中
+        }
+        stopping_ = true;
+        opened_ = false;
     }
-    stopping_ = true;
-    opened_ = false;
 
     // ★ 这里**只置标志**，socket 全部交给下面的 io 线程任务关。
     //
