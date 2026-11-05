@@ -6,7 +6,7 @@
 
 > 基于 **C++17 + 独立 Asio** 的 TCP / UDP 通信库。
 > **零第三方依赖**：Asio 随仓库提供，`git clone` 即可构建，产物不链接任何第三方 DLL。
-> **对外头文件不依赖 Asio** —— 装出去的包只有 9 个头文件，使用者不需要自备 Asio。
+> **对外头文件不依赖 Asio** —— 装出去的包只有本库自己的头，使用者不需要自备 Asio。
 
 ---
 
@@ -19,7 +19,7 @@
 | **回调天然串行** | 每条连接绑定一个 `io_context`，**1 context = 1 线程**，同一连接的回调不会并发 |
 | **反压语义明确** | `write()` 返回 `false` 表示"没受理"，不是出错，也**不会断链** |
 | **失败可归因** | 每笔操作的完成回调恰好一次，带缓冲区原样归还；不会静默丢弃 |
-| **双平台验证** | MSVC 14.44 与 GCC 15 下均 64 用例 / 810 断言全绿，零警告 |
+| **双平台验证** | MSVC 与 GCC 下全量用例通过、零警告 |
 
 ---
 
@@ -275,7 +275,7 @@ export QEMU_LD_PREFIX=/opt/gcc-arm-10.2-2020.11-x86_64-aarch64-none-linux-gnu/aa
 ## 目录结构
 
 ```
-include/netmech/    公共头（7 个）
+include/netmech/    公共头
   common.hpp          initialize/shutdown、Address、Buf/ConstBuf、NetErrc
   conn.hpp            Conn（TCP 连接）、ReadMode、IdleInfo
   iohandler.hpp       ConnHandler（单连接协议处理器）
@@ -286,7 +286,7 @@ include/netmech/    公共头（7 个）
   net.hpp             汇总头，业务代码只需要包含它
 
 src/                实现（8 个 .cpp + 内部头）
-test/               单元测试（64 用例 / 810 断言）
+test/               单元测试
 bench/              stress（并发/吞吐）、soak（长跑）、bench_strand（开销基准）
 example/            TCP 与 UDP 的 echo 示例
 docs/               设计文档与 API 说明
@@ -334,7 +334,7 @@ target_link_libraries(app PRIVATE netmech::netmech)
 `mswsock`）都由导入的 target 带着走**。装出去的结构是：
 
 ```
-<prefix>/include/netmech/*.hpp                           # 只有本库的 9 个头文件
+<prefix>/include/netmech/*.hpp                           # 只有本库的头
 <prefix>/lib/libnetmech.a
 <prefix>/lib/cmake/netmech/netmech{Config,ConfigVersion,Targets}.cmake
 ```
