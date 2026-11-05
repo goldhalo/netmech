@@ -185,6 +185,52 @@ jobs:
           LSAN_OPTIONS: detect_leaks=0
         run: ctest --test-dir build-san --output-on-failure --timeout 300
 
+
+  # ---------------------------------------------------------------------------
+  # TSan（数据竞争）
+  #
+  # ASan/UBSan 抓不到数据竞争：两个线程同时写一块内存，读到的值"碰巧对"时
+  # 什么症状都没有。库的契约是"回调在该连接的 io 线程上串行"，一旦哪里漏了
+  # 一次同步，只有 TSan 看得出来。
+  #
+  # 2026-11 第一次开这个 job 时，全量报出 54 条，其中 3 条落在库代码里
+  # （Conn::close/self_ref）。顺藤摸瓜查下去发现是**测试夹具**把 shared_ptr
+  # 跨线程读写（撕裂成悬垂指针，解引用发生在库代码里，报告就挂在了库头上）。
+  # 修完夹具后是 0 条 —— 所以这里**不留 suppression**：再报就是真问题。
+  #
+  # 注意 halt_on_error=1：一报就红，不给自己"累积一堆再看"的余地。
+  # ---------------------------------------------------------------------------
+  tsan:
+    name: TSan
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: 配置（Debug + TSan）
+        run: |
+          cmake -S . -B build-tsan -G Ninja \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g -O1" \
+                -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g -O1" \
+                -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
+                -DNETMECH_BUILD_TESTS=ON \
+                -DNETMECH_BUILD_EXAMPLES=OFF
+
+      - name: 构建
+        run: cmake --build build-tsan --parallel
+
+      - name: 测试（报告任何数据竞争即失败）
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:history_size=4
+        run: ctest --test-dir build-tsan --output-on-failure --timeout 300
+
   # ---------------------------------------------------------------------------
   # 质量门禁
   # ---------------------------------------------------------------------------

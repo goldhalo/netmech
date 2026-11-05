@@ -59,6 +59,13 @@ public:
         ++count;
     }
 
+    /// 加锁读最近一次错误码（on_read 在 io 线程写，测试在主线程读）。
+    [[nodiscard]] std::error_code ec() const
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        return last_ec;
+    }
+
     void on_peer_changed(UdpEndpoint&, const Address& from) override
     {
         std::lock_guard<std::mutex> lk(m_mtx);
@@ -115,7 +122,7 @@ NETMECH_TEST(udp_roundtrip_reports_peer)
     REQUIRE(wait_until([&] { return sink->count.load() == 1; }, 3000ms));
     CHECK_EQ(sink->snapshot_payload(), std::string(payload));
     CHECK_EQ(sink->last_size, sizeof(payload) - 1);
-    CHECK(!sink->last_ec);
+    CHECK(!sink->ec());
 
     // 来源 == 发送端的本地地址（回环直连，未经 NAT）
     CHECK(sink->last_from == tx->local_address());
@@ -166,14 +173,14 @@ NETMECH_TEST(udp_truncates_oversized_datagram)
 
     REQUIRE(wait_until([&] { return sink->count.load() == 1; }, 3000ms));
     CHECK_EQ(sink->last_size, 64u);                                  // 只收到缓冲大小
-    CHECK(sink->last_ec == NetErrc::datagram_truncated);             // 明确告知被截断
+    CHECK(sink->ec() == NetErrc::datagram_truncated);             // 明确告知被截断
     CHECK_EQ(rx->datagrams_truncated(), 1u);
 
     // 端点仍可用：再来一条小报文应当正常收到
     const char small[] = "ok";
     REQUIRE(tx->send_to(rx->local_address(), {nullptr, small, sizeof(small) - 1}));
     REQUIRE(wait_until([&] { return sink->count.load() == 2; }, 3000ms));
-    CHECK(!sink->last_ec);
+    CHECK(!sink->ec());
     CHECK_EQ(sink->last_size, sizeof(small) - 1);
 
     rx->close();

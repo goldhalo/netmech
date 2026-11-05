@@ -46,7 +46,7 @@ class ProbeConn final : public ConnHandler {
 public:
     bool on_open(std::shared_ptr<Conn> ep) override
     {
-        m_ep = ep;
+        m_ep.set(ep);
         ++opened;
         // ★ 必须保持一笔读在途：没有读操作时，对端发来的 FIN 不会被感知，
         //   连接会静默挂着（TCP 的固有行为，不是库的问题）。
@@ -58,7 +58,7 @@ public:
         if (ec) {
             return;   // 对端关闭 / 本端 close：连接随其后关闭
         }
-        (void)m_ep->read({nullptr, m_rx.data(), m_rx.size()});
+        (void)m_ep.get()->read({nullptr, m_rx.data(), m_rx.size()});
     }
 
     void on_write(std::error_code, ConstBuf, std::size_t) override {}
@@ -69,7 +69,7 @@ public:
         m_ep.reset();
     }
 
-    std::shared_ptr<Conn>         m_ep;
+    netmech_test::SyncSlot<Conn>  m_ep;   // io 线程写、主线程 reset/close
     std::array<std::uint8_t, 128> m_rx{};
     std::atomic<int>              opened{0};
     std::atomic<int>              closed{0};
@@ -81,10 +81,10 @@ public:
     std::shared_ptr<ConnHandler> on_accept(Conn&) override
     {
         auto h = std::make_shared<ProbeConn>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<ProbeConn> last;
+    netmech_test::SyncSlot<ProbeConn> last;   // io 线程写、主线程读
 };
 
 /// 客户端：同时记录 handler 的弱引用，用于观察释放时机。
@@ -93,13 +93,13 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<ProbeConn>();
-        last = h;
+        last.set(h);
         weak = h;
         return h;
     }
     void on_linkdown(Conn&) override { linked_down.fetch_add(1); }
 
-    std::shared_ptr<ProbeConn> last;
+    netmech_test::SyncSlot<ProbeConn> last;   // io 线程写、主线程读
     std::weak_ptr<ProbeConn>   weak;
     std::atomic<int>           linked_down{0};
 };
@@ -121,17 +121,17 @@ NETMECH_TEST(conn_notifies_after_user_releases)
 
     auto cli = std::make_shared<ClientCtl>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
-    REQUIRE(wait_until([&] { return srv->last && srv->last->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return srv->last.ready() && srv->last.get()->opened.load() == 1; }, 3000ms));
 
     // ★ 用户彻底放手：把自己持有的那唯一一份 shared_ptr<Conn> 释放掉
-    cli->last->m_ep.reset();
+    cli->last.get()->m_ep.reset();
 
     // 对端主动关闭
-    srv->last->m_ep->close();
+    srv->last.get()->m_ep.get()->close();
 
     // 通知仍然要到达（强自持：在途 IO 完成处理捕获了 Conn 的强引用）
-    CHECK(wait_until([&] { return cli->last->closed.load() == 1; }, 3000ms));
+    CHECK(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 3000ms));
     CHECK(wait_until([&] { return cli->linked_down.load() == 1; }, 3000ms));
 
     mech->close_all();
@@ -153,15 +153,15 @@ NETMECH_TEST(handler_released_after_close)
 
     auto cli = std::make_shared<ClientCtl>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
 
     // 库持有 handler 期间，它必须活着（即使测试侧丢掉自己的 shared_ptr）
-    std::weak_ptr<ProbeConn> weak = cli->last;
+    std::weak_ptr<ProbeConn> weak = cli->last.get();
     cli->last.reset();
     CHECK(!weak.expired());   // 库仍强持有
 
     // 关闭连接 → on_close 之后库释放 handler
-    srv->last->m_ep->close();
+    srv->last.get()->m_ep.get()->close();
 
     CHECK(wait_until([&] { return weak.expired(); }, 3000ms));
 
@@ -186,11 +186,11 @@ NETMECH_TEST(repeated_connect_close_converges)
     for (int i = 0; i < kRounds; ++i) {
         auto cli = std::make_shared<ClientCtl>();
         REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-        REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
+        REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
 
         // 客户端主动断
-        cli->last->m_ep->close();
-        REQUIRE(wait_until([&] { return cli->last->closed.load() == 1; }, 3000ms));
+        cli->last.get()->m_ep.get()->close();
+        REQUIRE(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 3000ms));
     }
 
     // 全部收敛后，活跃连接数应回落到 0（服务端侧也是）

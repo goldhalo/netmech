@@ -80,10 +80,10 @@ public:
     std::shared_ptr<ConnHandler> on_accept(Conn&) override
     {
         auto h = std::make_shared<QuietHandler>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<QuietHandler> last;
+    netmech_test::SyncSlot<QuietHandler> last;   // io 线程写、主线程读
 };
 
 class QuietClient final : public Linkable {
@@ -91,11 +91,11 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<QuietHandler>();
-        last = h;
+        last.set(h);
         weak = h;
         return h;
     }
-    std::shared_ptr<QuietHandler> last;
+    netmech_test::SyncSlot<QuietHandler> last;   // io 线程写、主线程读
     std::weak_ptr<QuietHandler>   weak;
 };
 
@@ -228,10 +228,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<BurstThenFail>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<BurstThenFail> last;
+    netmech_test::SyncSlot<BurstThenFail> last;   // io 线程写、主线程读
 };
 
 /// 连上就断的 handler（触发对端的写在途失败）。
@@ -270,20 +270,20 @@ NETMECH_TEST(regress_write_callbacks_exactly_once_on_failure)
 
     auto cli = std::make_shared<FailClient>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last != nullptr; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready(); }, 3000ms));
 
     // 等连接彻底关闭
-    REQUIRE(wait_until([&] { return cli->last->closed.load() == 1; }, 5000ms));
+    REQUIRE(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 5000ms));
     std::this_thread::sleep_for(100ms);   // 给在途回调一点收尾时间
 
-    const int acc = cli->last->accepted.load();
+    const int acc = cli->last.get()->accepted.load();
     REQUIRE(acc > 0);
 
     // ★ 契约：受理几笔就回调几笔，且每次回调只属于一笔
-    CHECK_EQ(cli->last->callbacks.load(), acc);
+    CHECK_EQ(cli->last.get()->callbacks.load(), acc);
     // 成功 + 失败 应当等于总回调数（没有第三类）
-    CHECK_EQ(cli->last->succeeded.load() + cli->last->failed.load(), acc);
-    CHECK_EQ(cli->last->closed.load(), 1);
+    CHECK_EQ(cli->last.get()->succeeded.load() + cli->last.get()->failed.load(), acc);
+    CHECK_EQ(cli->last.get()->closed.load(), 1);
 
     mech->close_all();
     mech.reset();
@@ -312,10 +312,10 @@ NETMECH_TEST(regress_no_handler_leak_across_cycles)
 
         auto cli = std::make_shared<QuietClient>();
         REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-        REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
+        REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
 
-        cli->last->m_ep->close();
-        REQUIRE(wait_until([&] { return cli->last->closed.load() == 1; }, 3000ms));
+        cli->last.get()->m_ep->close();
+        REQUIRE(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 3000ms));
 
         watched.push_back(cli->weak);   // 只留弱引用
 

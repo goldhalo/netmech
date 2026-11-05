@@ -93,10 +93,10 @@ public:
     std::shared_ptr<ConnHandler> on_accept(Conn&) override
     {
         auto h = std::make_shared<Collector>();
-        last   = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<Collector> last;
+    netmech_test::SyncSlot<Collector> last;   // io 线程写、主线程读
 };
 
 /// 客户端：on_open 里一口气提交 kCount 笔（队列必然积压 → 触发合并）。
@@ -143,10 +143,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<Burst>();
-        last   = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<Burst> last;
+    netmech_test::SyncSlot<Burst> last;   // io 线程写、主线程读
 };
 
 } // namespace
@@ -163,15 +163,15 @@ NETMECH_TEST(write_batches_merge_requests_without_losing_callbacks)
 
     auto cli = std::make_shared<BurstClient>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last != nullptr; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready(); }, 3000ms));
 
     // 1) 每一笔都必须回调，且只有一次
-    REQUIRE(wait_until([&] { return cli->last->completed.load() == kCount; }, 5000ms));
-    CHECK_EQ(cli->last->errors.load(), 0);
+    REQUIRE(wait_until([&] { return cli->last.get()->completed.load() == kCount; }, 5000ms));
+    CHECK_EQ(cli->last.get()->errors.load(), 0);
 
     // 2) 合并真的发生了：socket 写次数远少于请求笔数
-    const auto req = cli->last->m_ep->write_requests();
-    const auto bch = cli->last->m_ep->write_batches();
+    const auto req = cli->last.get()->m_ep->write_requests();
+    const auto bch = cli->last.get()->m_ep->write_batches();
     CHECK_EQ(req, static_cast<std::uint64_t>(kCount));
     CHECK(bch >= 1);
     // 100 笔 = 队首 1 笔 + 若干批 16 笔，理论上 ~7 次；给足余量
@@ -183,13 +183,13 @@ NETMECH_TEST(write_batches_merge_requests_without_losing_callbacks)
 
     // 3) 服务端收到的字节数正确
     REQUIRE(wait_until([&] {
-        return srv->last && srv->last->received.load() == kCount * kBlock;
+        return srv->last.ready() && srv->last.get()->received.load() == kCount * kBlock;
     }, 5000ms));
-    CHECK_EQ(srv->last->errors.load(), 0);
+    CHECK_EQ(srv->last.get()->errors.load(), 0);
 
     // 4) 字节流按序、无缺失（每块内容 = 块序号）
     {
-        const std::string& got = srv->last->m_data;
+        const std::string& got = srv->last.get()->m_data;
         REQUIRE(got.size() == static_cast<std::size_t>(kCount) * kBlock);
         int   bad   = 0;
         for (int i = 0; i < kCount; ++i) {

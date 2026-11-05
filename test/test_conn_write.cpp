@@ -94,10 +94,10 @@ public:
     std::shared_ptr<ConnHandler> on_accept(Conn&) override
     {
         auto h = std::make_shared<Collector>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<Collector> last;
+    netmech_test::SyncSlot<Collector> last;   // io 线程写、主线程读
 };
 
 /// 客户端：on_open 里连续提交若干笔写，记录"提交顺序"与"完成顺序"。
@@ -154,10 +154,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<FifoWriter>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<FifoWriter> last;
+    netmech_test::SyncSlot<FifoWriter> last;   // io 线程写、主线程读
 };
 
 } // namespace
@@ -177,23 +177,23 @@ NETMECH_TEST(write_completion_order_matches_submit_order)
 
     auto cli = std::make_shared<FifoFactory>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last != nullptr; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready(); }, 3000ms));
 
     const std::size_t expect = FifoWriter::kBlocks * kBlockSize;
-    CHECK(wait_until([&] { return srv->last && srv->last->received.load() >= expect; }, 5000ms));
+    CHECK(wait_until([&] { return srv->last.ready() && srv->last.get()->received.load() >= expect; }, 5000ms));
 
-    std::lock_guard<std::mutex> lk(cli->last->mtx);
-    REQUIRE(cli->last->submitted.size() == FifoWriter::kBlocks);
-    REQUIRE(cli->last->completed.size() == FifoWriter::kBlocks);
+    std::lock_guard<std::mutex> lk(cli->last.get()->mtx);
+    REQUIRE(cli->last.get()->submitted.size() == FifoWriter::kBlocks);
+    REQUIRE(cli->last.get()->completed.size() == FifoWriter::kBlocks);
 
     // 完成顺序与提交顺序逐一对应（buf 指针原样回传）
-    CHECK(cli->last->completed == cli->last->submitted);
-    CHECK_EQ(cli->last->rejected.load(), 0);
-    CHECK_EQ(cli->last->write_errors.load(), 0);
-    CHECK_EQ(cli->last->bad_sizes.load(), 0);
+    CHECK(cli->last.get()->completed == cli->last.get()->submitted);
+    CHECK_EQ(cli->last.get()->rejected.load(), 0);
+    CHECK_EQ(cli->last.get()->write_errors.load(), 0);
+    CHECK_EQ(cli->last.get()->bad_sizes.load(), 0);
 
     // 服务端收到的字节顺序：A*16, B*16, C*16 ...
-    const std::string data = srv->last->snapshot();
+    const std::string data = srv->last.get()->snapshot();
     REQUIRE(data.size() >= expect);
     for (int i = 0; i < FifoWriter::kBlocks; ++i) {
         const std::string block = data.substr(static_cast<std::size_t>(i) * kBlockSize, kBlockSize);
@@ -264,10 +264,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<MultiWriter>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<MultiWriter> last;
+    netmech_test::SyncSlot<MultiWriter> last;   // io 线程写、主线程读
 };
 
 } // namespace
@@ -284,22 +284,22 @@ NETMECH_TEST(concurrent_writes_do_not_interleave)
 
     auto cli = std::make_shared<MultiFactory>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->m_ep != nullptr; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->m_ep != nullptr; }, 3000ms));
 
     // 三个线程同时写，每线程 20 块，块内填充各自的 tag
-    std::thread t1([&] { cli->last->burst('X'); });
-    std::thread t2([&] { cli->last->burst('Y'); });
-    std::thread t3([&] { cli->last->burst('Z'); });
+    std::thread t1([&] { cli->last.get()->burst('X'); });
+    std::thread t2([&] { cli->last.get()->burst('Y'); });
+    std::thread t3([&] { cli->last.get()->burst('Z'); });
     t1.join();
     t2.join();
     t3.join();
 
     const std::size_t expect =
         static_cast<std::size_t>(MultiWriter::kPerThread) * 3 * kBlockSize;
-    CHECK(wait_until([&] { return srv->last && srv->last->received.load() >= expect; }, 8000ms));
+    CHECK(wait_until([&] { return srv->last.ready() && srv->last.get()->received.load() >= expect; }, 8000ms));
 
     // 每个 16 字节块内部必须全部是同一种字节 —— 说明没有任何一笔被拆开交错
-    const std::string data = srv->last->snapshot();
+    const std::string data = srv->last.get()->snapshot();
     REQUIRE(data.size() >= expect);
     std::size_t bad_blocks = 0;
     for (std::size_t off = 0; off + kBlockSize <= data.size(); off += kBlockSize) {
@@ -313,8 +313,8 @@ NETMECH_TEST(concurrent_writes_do_not_interleave)
     }
     CHECK_MSG(bad_blocks == 0, "发现被拆开交错的写块");
 
-    CHECK_EQ(cli->last->rejected.load(), 0);
-    CHECK_EQ(cli->last->failed.load(), 0);
+    CHECK_EQ(cli->last.get()->rejected.load(), 0);
+    CHECK_EQ(cli->last.get()->failed.load(), 0);
 
     mech->close_all();
     mech.reset();

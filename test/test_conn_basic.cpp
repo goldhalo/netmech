@@ -136,11 +136,11 @@ public:
     {
         (void)c;
         auto h = std::make_shared<EchoConn>();
-        last = h;
+        last.set(h);
         return h;
     }
 
-    std::shared_ptr<EchoConn> last;
+    netmech_test::SyncSlot<EchoConn> last;   // io 线程写、主线程读
 };
 
 /// 客户端订阅者
@@ -150,11 +150,11 @@ public:
     {
         (void)c;
         auto h = std::make_shared<ClientConn>();
-        last = h;
+        last.set(h);
         return h;
     }
 
-    std::shared_ptr<ClientConn> last;
+    netmech_test::SyncSlot<ClientConn> last;   // io 线程写、主线程读
 };
 
 } // namespace
@@ -178,23 +178,23 @@ NETMECH_TEST(conn_echo_roundtrip)
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
 
     // 等双方 on_open
-    CHECK(wait_until([&] { return srv->last && srv->last->opened.load() == 1; }, 3000ms));
-    CHECK(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
-    REQUIRE(srv->last != nullptr);
-    REQUIRE(cli->last != nullptr);
+    CHECK(wait_until([&] { return srv->last.ready() && srv->last.get()->opened.load() == 1; }, 3000ms));
+    CHECK(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
+    REQUIRE(srv->last.ready());
+    REQUIRE(cli->last.ready());
 
     // 客户端发一条
     const char payload[] = "hello-conn";
-    REQUIRE(cli->last->m_ep->write({nullptr, payload, sizeof(payload) - 1}));
+    REQUIRE(cli->last.get()->m_ep->write({nullptr, payload, sizeof(payload) - 1}));
 
     // 服务端收到并回写，客户端收到同样的内容
-    CHECK(wait_until([&] { return cli->last->received.size() == sizeof(payload) - 1; }, 3000ms));
-    CHECK_EQ(cli->last->received, std::string(payload));
+    CHECK(wait_until([&] { return cli->last.get()->received.size() == sizeof(payload) - 1; }, 3000ms));
+    CHECK_EQ(cli->last.get()->received, std::string(payload));
 
     // 服务端确实读到了，且回传的 buf 就是它提交的那块
-    CHECK_EQ(srv->last->bytes_in.load(), sizeof(payload) - 1);
-    CHECK_GE(srv->last->buf_matched.load(), 1);
-    CHECK_GE(srv->last->writes.load(), 1);
+    CHECK_EQ(srv->last.get()->bytes_in.load(), sizeof(payload) - 1);
+    CHECK_GE(srv->last.get()->buf_matched.load(), 1);
+    CHECK_GE(srv->last.get()->writes.load(), 1);
 
     mech->close_all();
     mech.reset();
@@ -216,23 +216,23 @@ NETMECH_TEST(conn_close_notifies_once)
 
     auto cli = std::make_shared<ClientLinkable>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return srv->last && srv->last->opened.load() == 1; }, 3000ms));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return srv->last.ready() && srv->last.get()->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
 
     // 主动关闭客户端连接
-    cli->last->m_ep->close();
+    cli->last.get()->m_ep->close();
 
-    CHECK(wait_until([&] { return cli->last->closed.load() == 1; }, 3000ms));
+    CHECK(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 3000ms));
 
     // 关闭后 is_open 为 false，读写都不受理
-    CHECK(!cli->last->m_ep->is_open());
-    CHECK(!cli->last->m_ep->write({nullptr, "x", 1}));
-    CHECK(!cli->last->m_ep->read({nullptr, nullptr, 0}));
+    CHECK(!cli->last.get()->m_ep->is_open());
+    CHECK(!cli->last.get()->m_ep->write({nullptr, "x", 1}));
+    CHECK(!cli->last.get()->m_ep->read({nullptr, nullptr, 0}));
 
     // 再关一次是幂等的，不会产生第二个 on_close
-    cli->last->m_ep->close();
+    cli->last.get()->m_ep->close();
     std::this_thread::sleep_for(50ms);
-    CHECK_EQ(cli->last->closed.load(), 1);
+    CHECK_EQ(cli->last.get()->closed.load(), 1);
 
     mech->close_all();
     mech.reset();
@@ -254,14 +254,14 @@ NETMECH_TEST(conn_single_read_in_flight)
 
     auto cli = std::make_shared<ClientLinkable>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
 
     // ClientConn 在 on_open 里已经发起了一笔读 → 再发起必须被拒绝
     std::uint8_t scratch[8] = {};
-    CHECK(!cli->last->m_ep->read({nullptr, scratch, sizeof scratch}));
+    CHECK(!cli->last.get()->m_ep->read({nullptr, scratch, sizeof scratch}));
 
     // 空 buffer 也不受理
-    CHECK(!cli->last->m_ep->write({nullptr, nullptr, 0}));
+    CHECK(!cli->last.get()->m_ep->write({nullptr, nullptr, 0}));
 
     mech->close_all();
     mech.reset();
@@ -287,12 +287,12 @@ NETMECH_TEST(conn_user_context_propagates)
     auto cli = std::make_shared<ClientLinkable>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000, Address(), cli_ctx));
 
-    REQUIRE(wait_until([&] { return srv->last && srv->last->opened.load() == 1; }, 3000ms));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return srv->last.ready() && srv->last.get()->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
 
     // 服务端连接继承监听器上下文；客户端连接用 connect 传入的那个
-    CHECK(srv->last->m_ep->user_context() == srv_ctx);
-    CHECK(cli->last->m_ep->user_context() == cli_ctx);
+    CHECK(srv->last.get()->m_ep->user_context() == srv_ctx);
+    CHECK(cli->last.get()->m_ep->user_context() == cli_ctx);
 
     mech->close_all();
     mech.reset();
@@ -314,10 +314,10 @@ NETMECH_TEST(mechanism_write_and_close_by_id)
 
     auto cli = std::make_shared<ClientLinkable>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->opened.load() == 1; }, 3000ms));
-    REQUIRE(wait_until([&] { return srv->last && srv->last->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return srv->last.ready() && srv->last.get()->opened.load() == 1; }, 3000ms));
 
-    const std::uint64_t cid = cli->last->m_ep->id();
+    const std::uint64_t cid = cli->last.get()->m_ep->id();
 
     // 未知 id 一律返回 false
     CHECK(!mech->write(0xFFFFFFF0u, {nullptr, "x", 1}));
@@ -326,11 +326,11 @@ NETMECH_TEST(mechanism_write_and_close_by_id)
     // 按 id 发数据，服务端应当收到
     const char payload[] = "by-id";
     REQUIRE(mech->write(cid, {nullptr, payload, sizeof(payload) - 1}));
-    CHECK(wait_until([&] { return srv->last->bytes_in.load() == sizeof(payload) - 1; }, 3000ms));
+    CHECK(wait_until([&] { return srv->last.get()->bytes_in.load() == sizeof(payload) - 1; }, 3000ms));
 
     // 按 id 关闭，之后同一 id 不再受理写
     CHECK(mech->close(cid));
-    CHECK(wait_until([&] { return cli->last->closed.load() == 1; }, 3000ms));
+    CHECK(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 3000ms));
     CHECK(!mech->write(cid, {nullptr, "x", 1}));
 
     mech->close_all();
