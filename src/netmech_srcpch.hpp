@@ -55,6 +55,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <future>
 #include <mutex>
 #include <optional>
 #include <string>

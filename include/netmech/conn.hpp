@@ -193,8 +193,9 @@ public:
     ///       若两者都传 0 则等于不限制（不推荐，可能 OOM）。
     /// @note 该设置只影响后续 async_write 的受理判断，不影响已在队列中的请求。
     /// @note 可在 Linkable::on_accept/on_linkup 中调用做业务级配额。
-    /// @note 线程安全：内部 post 到该连接的 io_context 生效；从调用返回后即保证后续
-    ///       async_write 使用新配额（实现方须保证这一点）。
+    /// @note 线程安全。实现是直接更新一个受互斥量保护的配额，而写路径判定用的是
+    ///       **同一把锁** —— 所以从调用返回后，后续 `async_write` 一定用新配额。
+    ///       （以前这里写的是"内部 post 到 io_context 生效"，与实现不符。）
     void set_send_queue_limit(std::size_t bytes, std::size_t count);
 
     // -------------------------------------------------------------------------

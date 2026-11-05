@@ -30,7 +30,7 @@
 //
 //  ★ 两分钟上手
 //  ---------------------------------------------------------------------------
-//  #include <netmech/netmech.hpp>
+//  #include <netmech/net.hpp>
 //
 //  // 场景一：GB28181 的 RTP —— 一路流一个端口
 //  struct RtpHandler : netmech::UdpHandler {
@@ -401,9 +401,11 @@ public:
     ///     // 2) 高频发送：自己维护缓冲池，发送完成回调里才归还
     /// @endcode
     ///
-    /// @warning 对比 `Conn::write`（TCP）：那个**内部会拷贝**，传栈缓冲是安全的。
-    ///          UDP 为了零拷贝不拷，所以生命周期要调用方自己管。这两者的差异
-    ///          是刻意的（UDP 高频小包，多一次 memcpy 不划算），但必须知道。
+    /// @warning **`Conn::write`（TCP）与这里一样是零拷贝**。
+    ///          以前这段写的是"TCP 那个内部会拷贝，传栈缓冲是安全的" ——
+    ///          那是**错的**：TCP 的写队列同样只持 `ConstBuf` 视图 + owner
+    ///          引用计数（conn.cpp 的受理路径），生命周期契约与 UDP 完全相同。
+    ///          照旧文档传栈缓冲并立即复用，写出去的就是被覆盖的垃圾。
     bool send_to(const Address& dst, ConstBuf buf);
 
     /// 本端实际绑定地址（bind 时端口给 0 就靠它取回）。

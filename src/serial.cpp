@@ -151,7 +151,7 @@ public:
 
                 if (ec) {
                     invoke_void([&] { self->handler->on_read(ec, buf, 0); });
-                    self->finish_close();
+                    self->post_close();
                     return;
                 }
                 invoke_void([&] { self->handler->on_read({}, buf, n); });
@@ -187,10 +187,25 @@ public:
             }
         }
 
-        // ★ 必须在锁外调 do_write：它内部还要拿 send_mtx（std::mutex 不可重入）。
-        //   原来在这里直接调，锁没释放 → 自死锁，write() 永远不返回。
+        // ★ 必须在锁外发起，而且要**投递到串口自己的 io 线程**。
+        //
+        //   锁外：do_write 内部还要拿 send_mtx（std::mutex 不可重入），
+        //         原来在这里直接调 → 自死锁，write() 永远不返回。
+        //
+        //   投递：`asio::async_write(port, ...)` 会碰 serial_port 对象，而 Asio 的
+        //         规则是 "Distinct objects: safe; shared objects: **unsafe**"。
+        //         本线程直接发起时，io 线程可能正在跑在途 async_read_some 的
+        //         完成处理（arm_read 重挂读）—— 两条线程同时碰同一个对象，
+        //         是标准的数据竞争。
+        //
+        //         UDP 侧早就改成"投递到端点 io 线程"了（udp_endpoint.cpp 的
+        //         do_send，还写了理由），串口这里是当初修 UDP 时漏掉的同类项。
+        //
+        //   用 post 而不是 dispatch：写必须严格按队列顺序，不能插到已排队的
+        //   动作前面（那会让后到的写先出去）。
         if (need_start) {
-            do_write();
+            auto self = shared_from_this();
+            asio::post(port.get_executor(), [self] { self->do_write(); });
         }
         return true;
     }
@@ -230,7 +245,7 @@ public:
                     return;
                 }
                 if (ec) {
-                    self->finish_close();
+                    self->post_close();
                     return;
                 }
                 self->do_write();   // 继续下一笔
@@ -241,19 +256,53 @@ public:
     //  关闭
     // -------------------------------------------------------------------------
 
-    void finish_close()
+    /// 对外入口：关闭串口。
+    ///
+    /// 分两段：
+    ///   · **调用线程同步**翻 `closed_` / `open_` —— `close()` 返回后
+    ///     `is_open()` 立刻是 false、`write()` 立刻返回 false（既有语义，测试在断言它）；
+    ///   · **投到 io 线程**做真正碰 `serial_port` 的那一步（`port.close()` + `on_close`）。
+    ///
+    /// 为什么不能在这里直调 `port.close()`：它与在途的 async_read/write 是**同一个
+    /// 对象**，Asio 明确"shared objects: unsafe"；而且 `on_close` 会落在调用线程上，
+    /// 破 serial.hpp 的"回调都在串口 io 线程"约定。
+    ///
+    /// 用 dispatch：已经在 io 线程上时就地执行（读/写错误触发的关闭走这条路）。
+    void post_close() noexcept
     {
         if (closed_.exchange(true, std::memory_order_acq_rel)) {
-            return;
+            return;   // 幂等
         }
-        // ★ 先置 closing 再 cancel/close：完成回调靠它区分
-        //   "端口在关"（abort 属正常收敛）与 "flush 打断"（要重挂）。
+        // 先置 closing 再翻 open：完成回调靠它区分
+        // "端口在关"（abort 属正常收敛）与 "flush 打断"（要重挂）。
         closing.store(true, std::memory_order_release);
-
         const bool was_open = open_.exchange(false, std::memory_order_acq_rel);
-        error_code_t ec;
-        port.close(ec);
 
+        std::shared_ptr<Impl> self;
+        try {
+            self = shared_from_this();
+        } catch (...) {
+            return;   // 不是 shared_ptr 管理（不该发生）：交给 port 析构兜底
+        }
+
+        auto fn = [self, was_open] { self->close_on_io(was_open); };
+        try {
+            asio::dispatch(port.get_executor(), fn);
+        } catch (...) {
+            // io_context 已停：此时必然没有并发的在途操作（io 线程已退出），
+            // 直接关是安全的。
+            try { fn(); } catch (...) {}
+        }
+    }
+
+    /// 真正碰 `serial_port` 的那一步（**只在 io 线程上**）。
+    void close_on_io(bool was_open) noexcept
+    {
+        error_code_t ec;
+        try {
+            port.close(ec);
+        } catch (...) {
+        }
         if (was_open && handler) {
             invoke_void([&] { handler->on_close(); });
         }
@@ -276,7 +325,6 @@ public:
         });
     }
 
-    void close() { finish_close(); }
 
     // -------------------------------------------------------------------------
     //  其它
@@ -341,7 +389,9 @@ SerialPort::SerialPort() = default;
 SerialPort::~SerialPort()
 {
     if (m_impl) {
-        m_impl->close();
+        // 析构线程上不能直调 port.close()（与在途 IO 同对象竞争）；
+        // post_close 会投到 io 线程。若 io 线程已停，它会在 catch 里兜底同步关。
+        m_impl->post_close();
     }
 }
 
@@ -420,7 +470,7 @@ const std::string& SerialPort::device() const noexcept
 void SerialPort::close() noexcept
 {
     if (m_impl) {
-        m_impl->close();
+        m_impl->post_close();
     }
 }
 

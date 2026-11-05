@@ -452,6 +452,11 @@ std::error_code Mechanism::listen(const Address& addr,
     if (!m_impl || !m_impl->pool) {
         return make_boost_error_code(NetErrc::not_initialized);
     }
+    // ★ shutdown 之后不再受理：否则会"成功"地把任务排进已停的 io_context 队列，
+    //   永不执行 —— listen 出来的服务器看起来开着，却一个连接都收不到。
+    if (!m_impl->pool->running()) {
+        return make_boost_error_code(NetErrc::not_initialized);
+    }
     // 公共接口用 Address，内部（acceptor / 连接表键）仍用 asio endpoint。
     const endpoint_t local = detail::to_asio_endpoint(addr);
     if (local.port() == 0 && local.address().is_unspecified()) {
@@ -575,7 +580,7 @@ std::error_code Mechanism::listen(const Address& addr,
 
     std::shared_ptr<Acceptor> acc;
     try {
-        acc = std::make_shared<Acceptor>(*pool, deliver);
+        acc = std::make_shared<Acceptor>(*pool, deliver, m_impl->cfg.tcp_nodelay);
     } catch (...) {
         std::lock_guard<std::mutex> lock(m_impl->listeners_mutex);
         m_impl->listeners.erase(key);
@@ -854,6 +859,10 @@ std::error_code Mechanism::connect(const Address& remote_addr,
     if (!m_impl || !m_impl->pool) {
         return make_boost_error_code(NetErrc::not_initialized);
     }
+    // ★ 同 listen：shutdown 之后不再受理，否则任务排进已停的队列永不执行。
+    if (!m_impl->pool->running()) {
+        return make_boost_error_code(NetErrc::not_initialized);
+    }
     // 公共接口用 Address，内部仍用 asio endpoint。
     const endpoint_t remote = detail::to_asio_endpoint(remote_addr);
     const endpoint_t local  = detail::to_asio_endpoint(local_addr);
@@ -971,7 +980,11 @@ std::error_code Mechanism::connect(const Address& remote_addr,
         std::shared_ptr<Conn> ep = impl->make_endpoint(
             std::move(op->sock), effective_remote, local_addr, op->linkable, op->user_ctx);
         if (!ep) {
-            return;   // id 耗尽 / 创建失败：socket 已被 close
+            // ★ 不能只 return：连接对象造不出来（id 耗尽 / 其它创建失败），
+            //   socket 已经被 close，但应用还在等 on_linkfail。
+            //   "失败可观察"是本库的卖点，这条路径上是静默的 —— 补一次通知。
+            finish_connect_fail(op, std::make_error_code(std::errc::resource_unavailable_try_again));
+            return;
         }
         std::shared_ptr<Conn::Impl> state = ep->m_impl;
 

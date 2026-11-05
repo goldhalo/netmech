@@ -103,7 +103,7 @@ bool apply_listen_socket_options(asio::ip::tcp::acceptor& acceptor,
 
 } // namespace
 
-Acceptor::Acceptor(IoPool& pool, DeliverFn deliver)
+Acceptor::Acceptor(IoPool& pool, DeliverFn deliver, bool tcp_nodelay)
     // ★ `pool_` 先初始化（拷贝而非 move）：它必须**先于** `ioc_` 就绪，
     //   否则 `ioc_` 会指向一个已经失效的 context。拷贝保留了入参 `pool`，
     //   `context_of(pool)` 才拿得到有效的池。
@@ -113,6 +113,7 @@ Acceptor::Acceptor(IoPool& pool, DeliverFn deliver)
     , retry_timer_(ioc_)
     , pending_socket_(ioc_)
     , deliver_(std::move(deliver))
+    , tcp_nodelay_(tcp_nodelay)
 {
 }
 
@@ -257,17 +258,27 @@ void Acceptor::close() noexcept
 
         // 外部线程：投递 + 等它执行完 —— 保住"close() 返回后端口已释放"的
         // 既有语义（unlisten 之后立刻在同一端口 listen 的代码依赖它）。
-        auto done = std::make_shared<std::atomic<bool>>(false);
-        asio::post(ioc_, [self, done]() {
+        //
+        // ★ 用 future::wait_for 而不是"自旋 20 万次 yield"。
+        //   自旋的两个问题：① 纯烧 CPU（尤其 io_context 已停、任务永远不会执行时
+        //   跑满 20 万次）；② 超时后直接返回，此时端口**尚未释放**，
+        //   "close 返回即可重绑"的语义在这里破约（注释里记过的
+        //   "unlisten 之后重绑撞 address_in_use"就是它的表现）。
+        //   改成有界等待后，超时至少是**明确的 500ms**，而不是"看机器心情"。
+        auto prom = std::make_shared<std::promise<void>>();
+        std::future<void> fut = prom->get_future();
+        asio::post(ioc_, [self, prom]() {
             try {
                 self->close_impl();
             } catch (...) {
             }
-            done->store(true, std::memory_order_release);
+            try {
+                prom->set_value();
+            } catch (...) {
+            }
         });
-        for (int i = 0; i < 200000 && !done->load(std::memory_order_acquire); ++i) {
-            std::this_thread::yield();
-        }
+        // 有界等待：io 线程正常时是微秒级；异常情况下不无限等。
+        (void)fut.wait_for(std::chrono::milliseconds(500));
     } catch (...) {
         // io_context 已停止：post 不成立，由 ~Acceptor 兜底。
     }
@@ -313,9 +324,14 @@ void Acceptor::configure_socket(socket_t& sock) noexcept
 {
     error_code_t ec;
     try {
-        // TCP_NODELAY 与 socket 缓冲由 Mechanism 统一配置；这里只做 acceptor
-        // 侧的公共设置（keep_alive 由业务用应用层保活实现，不设 SO_KEEPALIVE）。
-        sock.set_option(asio::ip::tcp::no_delay(true), ec);
+        // TCP_NODELAY 跟随 `Config::tcp_nodelay`。
+        // 以前这里**无条件**开：用户配 false 想走 Nagle 缓冲时，服务端
+        // （accept 出来的连接）照样全关，只有客户端 connect 侧生效 ——
+        // 同一个配置项在两侧语义不一致。
+        if (tcp_nodelay_) {
+            sock.set_option(asio::ip::tcp::no_delay(true), ec);
+        }
+        // keep_alive 由业务用应用层保活实现，不设 SO_KEEPALIVE。
         sock.set_option(asio::socket_base::keep_alive(false), ec);
     } catch (...) {
         // socket 选项设置失败不影响连接可用性。

@@ -65,7 +65,10 @@ public:
     /// @param[in] pool  io 池**强引用**（本对象据此取 io_context，并保证
     ///                 io_context 的存活期不短于本对象）。
     /// @param[in] deliver 交付回调（非空）。
-    Acceptor(IoPool& pool, DeliverFn deliver);
+    /// @param[in] tcp_nodelay 新建的 socket 是否设 TCP_NODELAY。
+    ///            这个值来自 `Config::tcp_nodelay` —— 以前 accept 侧**无条件**
+    ///            开 NODELAY，用户配 false 想启用 Nagle 在服务端完全无效。
+    Acceptor(IoPool& pool, DeliverFn deliver, bool tcp_nodelay = true);
 
     ~Acceptor();
 
@@ -137,6 +140,7 @@ private:
     timer_t                                               retry_timer_;
     socket_t                                              pending_socket_;   ///< 在途 accept 槽位
     DeliverFn                                             deliver_;
+    const bool                                            tcp_nodelay_;
 
     mutable std::mutex                                  mutex_;
     endpoint_t                                          local_;            ///< 期望绑定的地址

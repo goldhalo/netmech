@@ -10,7 +10,8 @@
 //  * **推送式**：库自己持续 recvfrom，收到就回调，调用方不调 read()。
 //  * **不做会话管理**：源地址只是观测值，不用来识别身份（见 udp.hpp 文件头）。
 //  * **错误不导致断链**：除了 socket 不可恢复错误，所有失败都是单次操作失败。
-//  * 发送是同步的：send_to 返回 true 只表示已交给内核。
+//  * 发送**不是**同步的：send_to 只是把任务 dispatch 到本端点所属的 io 线程
+//    （见 do_send 与 udp.hpp "发送是异步的"一节），返回 true 表示已受理。
 // =============================================================================
 #include "netmech_srcpch.hpp"
 
@@ -269,14 +270,17 @@ struct UdpEndpoint::Impl : public std::enable_shared_from_this<UdpEndpoint::Impl
         // io 线程之后，如果不等，端口会在几微秒后才释放，这类代码就会撞
         // address_in_use。等待只是把"调用线程做系统调用"换成"等 io 线程做"，
         // 可观测语义不变；`done` 用 shared_ptr 持有，超时返回也不会悬垂。
-        auto done = std::make_shared<std::atomic<bool>>(false);
-        asio::post(io, [do_close, done] {
+        // 有界等待（同 Acceptor::close 的理由：自旋纯烧 CPU，且超时后语义是模糊的）。
+        auto prom = std::make_shared<std::promise<void>>();
+        std::future<void> fut = prom->get_future();
+        asio::post(io, [do_close, prom] {
             do_close();
-            done->store(true, std::memory_order_release);
+            try {
+                prom->set_value();
+            } catch (...) {
+            }
         });
-        for (int i = 0; i < 200000 && !done->load(std::memory_order_acquire); ++i) {
-            std::this_thread::yield();
-        }
+        (void)fut.wait_for(std::chrono::milliseconds(500));
     }
 
     void finish_close() noexcept

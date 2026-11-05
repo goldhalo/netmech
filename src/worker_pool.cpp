@@ -44,6 +44,8 @@ public:
     std::atomic<std::size_t>  pending{0};
     std::atomic<std::size_t>  completed{0};
     std::size_t               count = 0;
+    /// 轮转游标（每个实例独立）。
+    std::atomic<std::size_t>  rr{0};
 
     bool push(std::function<void()> job, std::size_t which)
     {
@@ -193,9 +195,12 @@ bool WorkerPool::post(std::function<void()> job)
     if (!m_impl || m_impl->count == 0) {
         return false;
     }
-    // 轮转选择一条线程（简单的负载分摊）
-    static std::atomic<std::size_t> rr{0};
-    const auto idx = rr.fetch_add(1, std::memory_order_relaxed) % m_impl->count;
+    // 轮转选择一条线程（简单的负载分摊）。
+    //
+    // ★ 游标是**实例成员**，不是函数内 static —— 以前多个 WorkerPool 实例
+    //   共用一个游标，互相扰动分发分布（"为什么这个池的任务分布这么怪"）。
+    const auto idx =
+        m_impl->rr.fetch_add(1, std::memory_order_relaxed) % m_impl->count;
     return m_impl->push(std::move(job), idx);
 }
 
