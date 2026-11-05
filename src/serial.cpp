@@ -187,25 +187,28 @@ public:
             }
         }
 
-        // ★ 必须在锁外发起，而且要**投递到串口自己的 io 线程**。
+        // 必须在锁外发起：do_write 内部还要拿 send_mtx（std::mutex 不可重入），
+        // 原来在这里直接调 → 自死锁，write() 永远不返回。
         //
-        //   锁外：do_write 内部还要拿 send_mtx（std::mutex 不可重入），
-        //         原来在这里直接调 → 自死锁，write() 永远不返回。
+        // ⚠ **已知问题（未修）**：这里是在**调用线程**上发起
+        //   `asio::async_write(port, ...)`，而 Asio 明确"shared objects: unsafe"
+        //   —— io 线程可能正在跑在途 async_read_some 的完成处理（arm_read 重挂读），
+        //   两线程同时碰同一个 serial_port 是标准的数据竞争。
+        //   UDP 侧早就改成"投递到端点 io 线程"了，串口是当初漏掉的同类项。
         //
-        //   投递：`asio::async_write(port, ...)` 会碰 serial_port 对象，而 Asio 的
-        //         规则是 "Distinct objects: safe; shared objects: **unsafe**"。
-        //         本线程直接发起时，io 线程可能正在跑在途 async_read_some 的
-        //         完成处理（arm_read 重挂读）—— 两条线程同时碰同一个对象，
-        //         是标准的数据竞争。
+        //   试过改成 `asio::post(port.get_executor(), do_write)`：
+        //   netmech 自己的测试全过，但 **modbusmech 的 RTU 链路立刻坏掉** ——
+        //   `async_write` 返回成功（n=8、ec=Success）、pty master 端却收不到数据，
+        //   直调就正常。同一个 asio，只差发起线程。
+        //   没定位到根因前不硬上（RTU 是真实业务链路），所以**回退成直调**，
+        //   把这个竞争留在原地并记录在案。
         //
-        //         UDP 侧早就改成"投递到端点 io 线程"了（udp_endpoint.cpp 的
-        //         do_send，还写了理由），串口这里是当初修 UDP 时漏掉的同类项。
-        //
-        //   用 post 而不是 dispatch：写必须严格按队列顺序，不能插到已排队的
-        //   动作前面（那会让后到的写先出去）。
+        //   下一步排查方向：Linux pty 上 asio 的 reactive 写就绪通知
+        //   （slave 端写 → master 端可读）在 io 线程上是否被 in-flight 的
+        //   async_read_some 影响；或者确认是不是 termios/ECHO 造成的假象。
         if (need_start) {
             auto self = shared_from_this();
-            asio::post(port.get_executor(), [self] { self->do_write(); });
+            do_write();
         }
         return true;
     }
