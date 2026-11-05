@@ -49,7 +49,7 @@ class BurstWriter : public ConnHandler {
 public:
     bool on_open(std::shared_ptr<Conn> ep) override
     {
-        m_ep = ep;
+        m_ep.set(ep);
         // 只允许 1 个请求在途（bytes 不限制）。set_send_queue_limit 立即生效。
         ep->set_send_queue_limit(0, 1);
 
@@ -64,7 +64,7 @@ public:
     void on_write(std::error_code, ConstBuf, std::size_t) override { ++writes; }
     void on_close() override { ++closed; }
 
-    std::shared_ptr<Conn> m_ep;
+    netmech_test::SyncSlot<Conn> m_ep;
     bool first_accepted  = false;
     bool second_accepted = false;
     bool open_after_reject = false;
@@ -77,10 +77,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<BurstWriter>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<BurstWriter> last;
+    netmech_test::SyncSlot<BurstWriter> last;   // io 线程写、主线程读
 };
 
 // ---------------------------------------------------------------------------
@@ -125,10 +125,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<IdleProbe>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<IdleProbe> last;
+    netmech_test::SyncSlot<IdleProbe> last;   // io 线程写、主线程读
 };
 
 /// 服务端：接受但不读，只为让客户端的保活探测有对端。
@@ -169,21 +169,21 @@ NETMECH_TEST(backpressure_rejects_without_closing)
     auto cli = std::make_shared<BurstFactory>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
 
-    REQUIRE(wait_until([&] { return cli->last != nullptr; }, 3000ms));
-    REQUIRE(wait_until([&] { return cli->last->writes.load() >= 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready(); }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.get()->writes.load() >= 1; }, 3000ms));
 
     // 第一笔受理、第二笔被反压拒绝
-    CHECK(cli->last->first_accepted);
-    CHECK(!cli->last->second_accepted);
+    CHECK(cli->last.get()->first_accepted);
+    CHECK(!cli->last.get()->second_accepted);
 
     // 被拒时连接仍然开着（反压不是错误，不断链）
-    CHECK(cli->last->open_after_reject);
-    CHECK(cli->last->m_ep->is_open());
+    CHECK(cli->last.get()->open_after_reject);
+    CHECK(cli->last.get()->m_ep.get()->is_open());
 
     // 被拒的那笔没有完成回调：只应看到 1 次 on_write
     std::this_thread::sleep_for(100ms);
-    CHECK_EQ(cli->last->writes.load(), 1);
-    CHECK_EQ(cli->last->closed.load(), 0);
+    CHECK_EQ(cli->last.get()->writes.load(), 1);
+    CHECK_EQ(cli->last.get()->closed.load(), 0);
 
     mech->close_all();
     mech.reset();
@@ -204,19 +204,19 @@ NETMECH_TEST(keepalive_reports_each_miss)
 
     auto cli = std::make_shared<IdleFactory>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last != nullptr; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready(); }, 3000ms));
 
     // 3 拍 × 40ms ≈ 120ms；给足余量
-    CHECK(wait_until([&] { return cli->last->closed.load() == 1; }, 5000ms));
+    CHECK(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 5000ms));
 
-    std::lock_guard<std::mutex> lk(cli->last->mtx);
-    REQUIRE(cli->last->missed_seen.size() == 3u);
-    CHECK_EQ(cli->last->missed_seen[0], 1u);
-    CHECK_EQ(cli->last->missed_seen[1], 2u);
-    CHECK_EQ(cli->last->missed_seen[2], 3u);
-    CHECK_EQ(cli->last->limits_seen[0], 3u);
+    std::lock_guard<std::mutex> lk(cli->last.get()->mtx);
+    REQUIRE(cli->last.get()->missed_seen.size() == 3u);
+    CHECK_EQ(cli->last.get()->missed_seen[0], 1u);
+    CHECK_EQ(cli->last.get()->missed_seen[1], 2u);
+    CHECK_EQ(cli->last.get()->missed_seen[2], 3u);
+    CHECK_EQ(cli->last.get()->limits_seen[0], 3u);
     // 最后一次没有余地
-    CHECK(!cli->last->last_call_had_grace);
+    CHECK(!cli->last.get()->last_call_had_grace);
 
     mech->close_all();
     mech.reset();
@@ -231,7 +231,7 @@ class PendingReader : public ConnHandler {
 public:
     bool on_open(std::shared_ptr<Conn> ep) override
     {
-        m_ep = ep;
+        m_ep.set(ep);
         // 发起一笔读并让它一直挂着（对端不发数据）
         posted = ep->read({nullptr, m_rx.data(), m_rx.size()});
         return true;
@@ -246,7 +246,7 @@ public:
     void on_write(std::error_code, ConstBuf, std::size_t) override {}
     void on_close() override { closed.fetch_add(1); }
 
-    std::shared_ptr<Conn>         m_ep;
+    netmech_test::SyncSlot<Conn>  m_ep;
     std::array<std::uint8_t, 256> m_rx{};
     bool                          posted = false;
     std::error_code               read_ec;
@@ -260,10 +260,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<PendingReader>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<PendingReader> last;
+    netmech_test::SyncSlot<PendingReader> last;   // io 线程写、主线程读，必须同步
 };
 
 } // namespace
@@ -280,20 +280,20 @@ NETMECH_TEST(close_returns_inflight_read)
 
     auto cli = std::make_shared<ReaderFactory>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last != nullptr; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready(); }, 3000ms));
 
     // 读已受理且尚未完成
-    CHECK(cli->last->posted);
-    CHECK_EQ(cli->last->read_returned.load(), 0);
+    CHECK(cli->last.get()->posted);
+    CHECK_EQ(cli->last.get()->read_returned.load(), 0);
 
     // 主动关闭：在途读必须以非空 ec 归还一次，随后 on_close 一次
-    cli->last->m_ep->close();
+    cli->last.get()->m_ep.get()->close();
 
-    CHECK(wait_until([&] { return cli->last->read_returned.load() == 1; }, 3000ms));
-    CHECK(wait_until([&] { return cli->last->closed.load() == 1; }, 3000ms));
-    CHECK(static_cast<bool>(cli->last->read_ec));          // 归还时带错误码
-    CHECK_EQ(cli->last->read_returned.load(), 1);          // 恰好一次
-    CHECK_EQ(cli->last->closed.load(), 1);
+    CHECK(wait_until([&] { return cli->last.get()->read_returned.load() == 1; }, 3000ms));
+    CHECK(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 3000ms));
+    CHECK(static_cast<bool>(cli->last.get()->read_ec));          // 归还时带错误码
+    CHECK_EQ(cli->last.get()->read_returned.load(), 1);          // 恰好一次
+    CHECK_EQ(cli->last.get()->closed.load(), 1);
 
     mech->close_all();
     mech.reset();
@@ -347,10 +347,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<BackpressureRecovery>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<BackpressureRecovery> last;
+    netmech_test::SyncSlot<BackpressureRecovery> last;   // io 线程写、主线程读
 };
 
 } // namespace
@@ -367,12 +367,12 @@ NETMECH_TEST(backpressure_recovers_after_drain)
 
     auto cli = std::make_shared<RecoveryFactory>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last && cli->last->writes.load() >= 2; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->writes.load() >= 2; }, 3000ms));
 
-    CHECK(cli->last->first);    // 第一笔受理
-    CHECK(!cli->last->second);  // 配额用尽被拒
-    CHECK(cli->last->third);    // 释放后重新受理（恢复）
-    CHECK_EQ(cli->last->errors.load(), 0);
+    CHECK(cli->last.get()->first);    // 第一笔受理
+    CHECK(!cli->last.get()->second);  // 配额用尽被拒
+    CHECK(cli->last.get()->third);    // 释放后重新受理（恢复）
+    CHECK_EQ(cli->last.get()->errors.load(), 0);
 
     mech->close_all();
     mech.reset();
@@ -445,10 +445,10 @@ public:
     std::shared_ptr<ConnHandler> on_linkup(Conn&) override
     {
         auto h = std::make_shared<RstVictim>();
-        last = h;
+        last.set(h);
         return h;
     }
-    std::shared_ptr<RstVictim> last;
+    netmech_test::SyncSlot<RstVictim> last;   // io 线程写、主线程读
 };
 
 } // namespace
@@ -468,15 +468,15 @@ NETMECH_TEST(peer_reset_reports_error_and_closes)
 
     auto cli = std::make_shared<RstClient>();
     REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
-    REQUIRE(wait_until([&] { return cli->last != nullptr; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready(); }, 3000ms));
 
     // 对端 RST 之后，本端的读必须以错误码归还，并且连接关闭恰好一次
-    CHECK(wait_until([&] { return cli->last->read_failed.load() == 1; }, 5000ms));
-    CHECK(wait_until([&] { return cli->last->closed.load() == 1; }, 5000ms));
+    CHECK(wait_until([&] { return cli->last.get()->read_failed.load() == 1; }, 5000ms));
+    CHECK(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 5000ms));
 
-    CHECK(static_cast<bool>(cli->last->read_ec));
-    CHECK_EQ(cli->last->read_failed.load(), 1);
-    CHECK_EQ(cli->last->closed.load(), 1);
+    CHECK(static_cast<bool>(cli->last.get()->read_ec));
+    CHECK_EQ(cli->last.get()->read_failed.load(), 1);
+    CHECK_EQ(cli->last.get()->closed.load(), 1);
 
     mech->close_all();
     mech.reset();

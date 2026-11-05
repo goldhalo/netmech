@@ -28,6 +28,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -350,6 +351,59 @@ inline int run_all(const std::string& filter = std::string())
 
     return failures == 0 ? 0 : 1;
 }
+
+// ============================================================================
+//  SyncSlot —— 跨线程交接一个 shared_ptr 的安全槽位
+// ============================================================================
+//
+//  ★ 为什么需要它
+//   netmech 的契约是"回调在该连接的 io 线程上串行执行"，所以测试里常见的
+//   这种写法本身就是**数据竞争**：
+//
+//       // io 线程：回调里存下来
+//       last = std::make_shared<MyHandler>();
+//       // 主线程：轮询 + 直接解引用
+//       while (!last) sleep(1ms);
+//       last->m_ep->close();          // ← 与上面的赋值并发
+//
+//   `std::shared_ptr` 的"一写一读"不是原子的：可能读到"新指针 + 旧控制块"
+//   的半更新状态，于是拿到一个已经被释放对象的地址。TSan 会把随后那次解引用
+//   报在**库代码**里（例如 Conn::close 读 m_impl），看起来像库的 bug，
+//   实际是测试自己制造的。
+//
+//   用这个槽位交接就没有这个问题：写入/读取都在锁内完成。
+template <class T>
+class SyncSlot {
+public:
+    void set(std::shared_ptr<T> v)
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        m_v = std::move(v);
+    }
+
+    /// 取一份**强引用**（没有则返回空）。调用方拿到的对象保证活着。
+    [[nodiscard]] std::shared_ptr<T> get() const
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        return m_v;
+    }
+
+    [[nodiscard]] bool ready() const
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        return static_cast<bool>(m_v);
+    }
+
+    void reset()
+    {
+        std::lock_guard<std::mutex> lk(m_mtx);
+        m_v.reset();
+    }
+
+private:
+    mutable std::mutex    m_mtx;
+    std::shared_ptr<T>    m_v;
+};
 
 } // namespace netmech_test
 
