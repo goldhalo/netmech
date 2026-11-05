@@ -237,14 +237,32 @@ void Acceptor::close() noexcept
     // ★ 强自持：同 open() —— 关闭流程必定执行。
     std::shared_ptr<Acceptor> self = shared_from_this();
     try {
-        asio::post(ioc_, [self]() {
+        // 已经在池的 io 线程上：排队收尾即可（不能等自己）。
+        if (pool_ != nullptr && pool_->is_io_thread()) {
+            asio::post(ioc_, [self]() {
+                try {
+                    self->close_impl();
+                } catch (...) {
+                }
+            });
+            return;
+        }
+
+        // 外部线程：投递 + 等它执行完 —— 保住"close() 返回后端口已释放"的
+        // 既有语义（unlisten 之后立刻在同一端口 listen 的代码依赖它）。
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        asio::post(ioc_, [self, done]() {
             try {
                 self->close_impl();
             } catch (...) {
             }
+            done->store(true, std::memory_order_release);
         });
+        for (int i = 0; i < 200000 && !done->load(std::memory_order_acquire); ++i) {
+            std::this_thread::yield();
+        }
     } catch (...) {
-        // io_context 已停止：上面已同步关闭，可接受。
+        // io_context 已停止：post 不成立，由 ~Acceptor 兜底。
     }
 }
 

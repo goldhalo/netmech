@@ -249,12 +249,34 @@ struct UdpEndpoint::Impl : public std::enable_shared_from_this<UdpEndpoint::Impl
         //   对象不是线程安全的，调用线程直调会与 io 线程在途的
         //   async_receive_from / do_send 撞同一个对象（数据竞争，Windows 上
         //   表现为对象内部状态错乱，POSIX 上误关 fd 可能带走别的连接）。
-        asio::post(io, [self]() {
+        auto do_close = [self]() {
             error_code_t ignored;
             self->socket.cancel(ignored);
             self->socket.close(ignored);
             self->finish_close();
+        };
+
+        // 已经在池的 io 线程上：不能等自己，直接排队收尾。
+        if (pool != nullptr && pool->is_io_thread()) {
+            asio::post(io, do_close);
+            return;
+        }
+
+        // 外部线程：投递 + **等它执行完**。
+        //
+        // 为什么要等：`close()` 的既有契约是"返回后端口已释放"（大量代码依赖
+        // "关掉再立刻绑同一端口"，比如构造失败时的回滚）。把 socket 操作搬到
+        // io 线程之后，如果不等，端口会在几微秒后才释放，这类代码就会撞
+        // address_in_use。等待只是把"调用线程做系统调用"换成"等 io 线程做"，
+        // 可观测语义不变；`done` 用 shared_ptr 持有，超时返回也不会悬垂。
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        asio::post(io, [do_close, done] {
+            do_close();
+            done->store(true, std::memory_order_release);
         });
+        for (int i = 0; i < 200000 && !done->load(std::memory_order_acquire); ++i) {
+            std::this_thread::yield();
+        }
     }
 
     void finish_close() noexcept
