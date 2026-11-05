@@ -10,6 +10,8 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <cstddef>
+#include <system_error>
 
 #include "test_framework.hpp"
 

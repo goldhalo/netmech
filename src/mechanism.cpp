@@ -59,6 +59,16 @@
 #include <atomic>
 #include <cstdio>
 #include <map>
+#include <optional>
+#include <memory>
+#include <vector>
+#include <mutex>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <system_error>
+#include <utility>
 
 namespace netmech {
 

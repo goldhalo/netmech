@@ -26,6 +26,10 @@
 
 #include "netmech_srcpch.hpp"
 
+#include <atomic>
+#include <optional>
+#include <cstdint>
+
 namespace netmech {
 
 /// Conn 的 id 类型（**非 detail**：ConnState 等在 netmech 下使用）。

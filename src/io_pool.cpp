@@ -9,6 +9,13 @@
 
 #include "io_pool.hpp"
 
+#include <memory>
+#include <vector>
+#include <mutex>
+#include <thread>
+#include <cstddef>
+#include <utility>
+
 namespace netmech {
 
 namespace {

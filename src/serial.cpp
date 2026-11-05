@@ -17,6 +17,12 @@
 #include <thread>
 #include <deque>
 #include <mutex>
+#include <memory>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <system_error>
+#include <utility>
 
 namespace netmech {
 

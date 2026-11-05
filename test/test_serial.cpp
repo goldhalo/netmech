@@ -14,6 +14,14 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <array>
+#include <memory>
+#include <vector>
+#include <mutex>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <system_error>
 
 #include "test_framework.hpp"
 

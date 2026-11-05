@@ -38,6 +38,9 @@
 #include "io_pool.hpp"
 
 #include <atomic>
+#include <functional>
+#include <mutex>
+#include <cstdint>
 
 namespace netmech {
 

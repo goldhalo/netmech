@@ -51,6 +51,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <system_error>
 
 namespace netmech {
 

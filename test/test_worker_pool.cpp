@@ -7,6 +7,9 @@
 #include <chrono>
 #include <thread>
 #include <vector>
+#include <mutex>
+#include <cstddef>
+#include <system_error>
 
 #include "test_framework.hpp"
 

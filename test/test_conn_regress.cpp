@@ -20,6 +20,10 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <functional>
+#include <cstddef>
+#include <cstdint>
+#include <system_error>
 
 #include "test_framework.hpp"
 

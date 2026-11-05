@@ -22,6 +22,10 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <cstddef>
+#include <cstdint>
+#include <system_error>
+#include <utility>
 
 using namespace netmech;
 

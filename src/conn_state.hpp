@@ -52,6 +52,15 @@
 #include "registry.hpp"
 
 #include <atomic>
+#include <optional>
+#include <functional>
+#include <memory>
+#include <deque>
+#include <mutex>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
 
 namespace netmech {
 

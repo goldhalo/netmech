@@ -18,6 +18,10 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <functional>
+#include <cstddef>
+#include <cstdint>
+#include <system_error>
 
 #include "test_framework.hpp"
 

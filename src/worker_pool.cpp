@@ -11,6 +11,11 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <functional>
+#include <memory>
+#include <cstddef>
+#include <system_error>
+#include <utility>
 
 namespace netmech {
 

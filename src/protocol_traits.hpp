@@ -32,6 +32,7 @@
 
 #include <cstddef>
 #include <type_traits>
+#include <system_error>
 
 #include <asio/basic_datagram_socket.hpp>
 #include <asio/basic_socket_acceptor.hpp>

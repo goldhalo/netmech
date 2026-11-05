@@ -24,6 +24,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <cstddef>
+#include <system_error>
 
 #include <asio/io_context.hpp>
 #include <asio/ip/tcp.hpp>

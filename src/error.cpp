@@ -31,6 +31,7 @@
 
 #include <string>
 #include <system_error>
+#include <optional>
 
 // from_boost_error_code 的实现要拿 asio 的错误常量比相等。
 // 只在 .cpp 里引 —— 公共头一行 asio 都不出现。

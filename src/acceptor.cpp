@@ -25,6 +25,13 @@
 #include "netmech/common.hpp"
 #include "io_pool.hpp"
 
+#include <memory>
+#include <mutex>
+#include <chrono>
+#include <cstdint>
+#include <system_error>
+#include <utility>
+
 namespace netmech {
 
 namespace {

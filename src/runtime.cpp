@@ -18,6 +18,8 @@
 #include "netmech/common.hpp"
 #include "io_pool.hpp"
 
+#include <cstddef>
+
 namespace netmech {
 
 bool initialize(std::size_t io_threads) noexcept

@@ -14,6 +14,8 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <vector>
+#include <cstdint>
 
 #include "test_framework.hpp"
 #include "test_support.hpp"

@@ -26,6 +26,19 @@
 // =============================================================================
 #include "netmech_srcpch.hpp"
 #include <cstdio>
+#include <array>
+#include <atomic>
+#include <optional>
+#include <functional>
+#include <memory>
+#include <vector>
+#include <deque>
+#include <mutex>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <system_error>
+#include <utility>
 
 #include "conn_state.hpp"
 #include "address_internal.hpp"

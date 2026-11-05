@@ -16,6 +16,10 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <string>
 
 #include "test_framework.hpp"
 

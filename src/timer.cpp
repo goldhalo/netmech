@@ -21,6 +21,14 @@
 
 #include "io_pool.hpp"
 
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <chrono>
+#include <cstdint>
+#include <system_error>
+#include <utility>
+
 namespace netmech {
 
 namespace {

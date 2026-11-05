@@ -22,6 +22,9 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <cstddef>
+#include <cstdint>
+#include <system_error>
 
 using namespace netmech;
 
