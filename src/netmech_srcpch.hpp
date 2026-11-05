@@ -15,21 +15,21 @@
 //  C++17 约束
 //  ----------
 //  本模块仅使用 C++17 特性（无 coroutine / concept / ranges / std::span /
-//  std::format），目标平台包含嵌入式板卡。Asio 侧使用 Boost 1.74 的经典接口：
+//  std::format），目标平台包含嵌入式板卡。Asio 侧使用 独立 Asio 的经典接口：
 //  `asio::io_context` + `asio::strand<executor>` + `executor_work_guard`，
 //  **不使用** C++20 才出现的 `any_io_executor`。
 // =============================================================================
 #pragma once
 
 // -----------------------------------------------------------------------------
-// Boost.Asio（必须先于其它可能引入 winsock 的头）
+// 独立 Asio（必须先于其它可能引入 winsock 的头）
 // -----------------------------------------------------------------------------
 #include <asio.hpp>
 #include <asio/steady_timer.hpp>
 #include <asio/strand.hpp>
 #include <asio/executor_work_guard.hpp>
 #include "protocol_traits.hpp"
-// executor.hpp 现在自带 Boost 依赖（它必须是自包含的公共头）。
+// src 内部头必须是自包含的（各自把依赖引全）。
 // 先包含它，下面的 io_context_t / strand_t / work_guard_t 别名即由其提供，
 // 本头不再重复定义，避免 downstream 出现歧义或重定义。
 #include "io_pool.hpp"
@@ -56,7 +56,7 @@
 namespace netmech {
 
 // -----------------------------------------------------------------------------
-// Asio 类型别名（Boost 1.74 经典接口，非 C++20 any_io_executor）
+// Asio 类型别名（独立 Asio 经典接口，非 C++20 any_io_executor）
 // -----------------------------------------------------------------------------
 //  这些别名放在 `netmech` 而不是 `detail`：executor.hpp 是公共头，
 //  IoPool 的签名需要直接引用它们。

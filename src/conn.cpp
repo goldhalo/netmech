@@ -110,12 +110,8 @@ Conn::Impl::~Impl()
     error_code_t ignored;
     recv_ka.timer.cancel(ignored);
     send_ka.timer.cancel(ignored);
-    // linger_zero=true 表示立刻断：必须跳过 shutdown —— 否则 FIN 先发出去，
-    // SO_LINGER{1,0} 的 RST 就发不成，端口照样进 TIME_WAIT。
-    { static std::atomic<int> dbg{0};
-      if (dbg.fetch_add(1) < 3) {
-          std::fprintf(stderr, "[dbg] close linger_zero=%d graceful=%d\n", (int)linger_zero, (int)!linger_zero);
-      } }
+    // 兜底关闭（正常路径已在 do_close 里关过；这里只处理"没走到 do_close"的情况）。
+    // 同样尊重 linger_zero，理由见 do_close 里的注释。
     close_socket_noexcept(socket, /*graceful=*/!linger_zero);
 
     // 兜底摘除：若某个路径没能走到 do_close（理论上不应发生），这里保证
@@ -379,6 +375,11 @@ void Conn::Impl::notify_write(const error_code_t& ec, const ConstBuf& buf,
                                   std::size_t n) noexcept
 {
     if (!handler || !handler_inited) {
+        // 退休快照兜底：handler 已释放，但这笔写是"已受理"的，必须回一次。
+        if (retired_handler) {
+            std::shared_ptr<ConnHandler> h = retired_handler;
+            invoke_void([&] { h->on_write(ec, buf, n); });
+        }
         return;
     }
     // 复制一份强引用：回调里若打开新的写，不会影响本次调用。
@@ -535,6 +536,10 @@ void Conn::Impl::notify_read(const error_code_t& ec, const Buf& buf,
                                  std::size_t n) noexcept
 {
     if (!handler || !handler_inited) {
+        if (retired_handler) {
+            std::shared_ptr<ConnHandler> h = retired_handler;
+            invoke_void([&] { h->on_read(ec, buf, n); });
+        }
         return;
     }
     std::shared_ptr<ConnHandler> h = handler;
@@ -848,7 +853,12 @@ void Conn::Impl::do_close(const error_code_t& reason) noexcept
     // 1) 先关 socket：此后不会再有新的 IO 完成，且 on_linkdown 里再 async_*
     //    必然返回 false（不会出现旧实现"linkdown 里 send 被静默丢弃"）。
     //    先 shutdown/close 再跑回调，也避免"数据与 FIN 乱序"（A-16）。
-    close_socket_noexcept(socket);
+    //
+    //    ★ linger_zero=true 时必须跳过 shutdown：先 shutdown 会把 FIN 发出去，
+    //      SO_LINGER{1,0} 的 RST 就发不成，端口照样进 TIME_WAIT ——
+    //      也就是说这个配置项**只有在这里生效**（真正关 socket 的是这一处，
+    //      ~Impl 里那次只是兜底，socket 早已关闭）。
+    close_socket_noexcept(socket, /*graceful=*/!linger_zero);
 
     // 2) 取消并复位保活定时器（不依赖回调时序，显式 reset）。
     recv_ka.reset();
@@ -914,10 +924,14 @@ void Conn::Impl::finish_handler() noexcept
     std::shared_ptr<ConnHandler> h = std::move(handler);
     const bool inited = handler_inited;
     handler_inited = false;
+
+    // ★ 留一份快照：on_open 返回 false 之前已受理的 read/write 稍后完成时，
+    //   队列里那笔 request 还要有地方派发错误（否则回调静默丢失）。
+    retired_handler = h;
+
     if (inited && h) {
         invoke_void([&h]() { h->on_close(); });
     }
-    // h 在此释放（若外部无其它引用，handler 对象随之析构）。
 }
 
 void Conn::Impl::notify_linkdown() noexcept

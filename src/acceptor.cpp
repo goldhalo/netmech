@@ -222,14 +222,18 @@ void Acceptor::close() noexcept
     stopping_ = true;
     opened_ = false;
 
-    // 先从任意线程同步关闭 acceptor：让在途 accept 立刻以 operation_aborted
-    // 返回，从而让 io 线程上的循环尽快收敛（不会永久挂住 io 线程）。
-    error_code_t ignored;
-    acceptor_.close(ignored);
-    retry_timer_.cancel(ignored);
-    close_socket_noexcept(pending_socket_);
-
-    // 再投递一次清理：在 io 线程内保证与 handle_accept 的先后不破坏状态。
+    // ★ 这里**只置标志**，socket 全部交给下面的 io 线程任务关。
+    //
+    //   以前这里同步做 acceptor_.close / retry_timer_.cancel /
+    //   close_socket_noexcept(pending_socket_)：asio 的对象不是线程安全的，
+    //   调用线程与 io 线程的 handle_accept 会同时对同一个 socket 做
+    //   "is_open 检查 + close"，POSIX 上第二次 close 可能关掉别的线程
+    //   刚 accept 出来的 fd（误杀连接），且本身是数据竞争。
+    //   库自己的 Conn::Impl::request_close 就是"只置位 + post"，这里对齐。
+    //
+    // 代价：close() 返回后 socket 实际关闭延后一个任务队列深度（微秒~毫秒），
+    //       期间 is_open() 已为 false、新 accept 被 stopping_ 拦掉，语义不变。
+    //
     // ★ 强自持：同 open() —— 关闭流程必定执行。
     std::shared_ptr<Acceptor> self = shared_from_this();
     try {

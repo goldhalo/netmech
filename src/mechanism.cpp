@@ -72,6 +72,8 @@
 
 namespace netmech {
 
+struct ConnectOp;   ///< 在途 connect 的操作对象（定义在文件后半段）
+
 // =============================================================================
 // 连接表条目
 // =============================================================================
@@ -119,7 +121,10 @@ struct Mechanism::Impl {
 
     /// 未完成的 connect 集合（键 = remote + 序号，同一目标可并发多个）。
     mutable std::mutex                                connects_mutex;
-    std::map<std::string, int>                        pending_connects;
+    /// 在途 connect 的账本：键 → 操作对象（weak，op 本身由 async handler 强持有）。
+    /// 之所以要存 weak_ptr 而不是占位标记：`close_all()` 必须能**够得着**这些
+    /// 在途操作去取消它们（否则 async_connect 完成后照样 on_linkup）。
+    std::map<std::string, std::weak_ptr<ConnectOp>>   pending_connects;
 
     /// 运行时是否"已开始关闭"（close_all 之后不再接受新 listen/connect？
     /// 不 —— 按需求 close_all 之后仍可用，故这里只用于析构期判定）。
@@ -867,7 +872,7 @@ std::error_code Mechanism::connect(const Address& remote_addr,
     // 1) 登记在途 connect（键唯一，因此同一目标可以并发多个）。
     {
         std::lock_guard<std::mutex> lock(m_impl->connects_mutex);
-        m_impl->pending_connects[key] = 1;
+        m_impl->pending_connects[key] = std::weak_ptr<ConnectOp>{};   // 占位，建 op 后填
     }
 
     // 2) 选一个 io_context 建 socket + 定时器。
@@ -879,6 +884,18 @@ std::error_code Mechanism::connect(const Address& remote_addr,
     } catch (...) {
         erase_pending_connect(m_impl, key);
         return make_boost_error_code(NetErrc::not_initialized);
+    }
+
+    // 把 op 填进账本（占位值换成真对象）。若期间 close_all() 已经扫过一遍、
+    // 把键删了，说明这条 connect 已被放弃 —— 直接失败返回，不发出去。
+    {
+        std::lock_guard<std::mutex> lock(m_impl->connects_mutex);
+        auto it = m_impl->pending_connects.find(key);
+        if (it == m_impl->pending_connects.end()) {
+            op->finished.store(true, std::memory_order_release);
+            return make_boost_error_code(NetErrc::link_closed);
+        }
+        it->second = op;
     }
 
     error_code_t ec;
@@ -902,24 +919,19 @@ std::error_code Mechanism::connect(const Address& remote_addr,
 
     std::weak_ptr<Impl> weak_impl = m_impl;
 
-    // 4) 超时定时器：用 steady_timer（单调时钟），超时后 **close socket** 让
-    //    在途 connect 以 operation_aborted 返回 —— Boost 1.74 的
-    //    basic_socket::cancel() 无法中止已进入内核的 SYN，close() 才是正确手段。
-    if (timeout_ms > 0) {
-        op->timer.expires_after(std::chrono::milliseconds(timeout_ms));
-        op->timer.async_wait([op, weak_impl](const error_code_t& timer_ec) {
-            if (timer_ec) {
-                return;   // 被完成路径取消
-            }
-            // 超时：先关 socket（打断在途 connect），再以 timed_out 通知。
-            error_code_t ignored;
-            op->sock.close(ignored);
-            (void)weak_impl;
-            finish_connect_fail(op, asio::error::timed_out);
-        });
-    }
+    // 4) ★ 先发起 connect，**再**挂超时定时器。
+    //
+    //    反过来（先挂定时器再 async_connect）有个窗口：定时器一旦到期，
+    //    io 线程会在超时回调里 `sock.close()`，而调用线程可能还没走到
+    //    `async_connect` —— 同一个 socket 对象被两条线程并发调用非 const
+    //    成员函数（asio 明确要求外部同步）。`timeout_ms` 很小（比如 1ms 的
+    //    快速探活）或调用线程被抢占时就能踩到。
+    //
+    //    交换之后：定时器 arm 之前 io 线程不可能碰到这个 socket；arm 之后
+    //    对 socket 的一切访问（超时 close、完成回调）都在 io 线程上串行。
+    //    代价只是超时计时的起点后移微秒级。
 
-    // 5) 发起 connect。
+    // 4a) 发起 connect。
     op->sock.async_connect(remote, [op, weak_impl](const error_code_t& conn_ec) {
         // 超时路径可能已先到：finished 裁决，后到者静默退出。
         if (op->finished.load(std::memory_order_acquire)) {
@@ -1007,6 +1019,37 @@ std::error_code Mechanism::connect(const Address& remote_addr,
         });
     });
 
+    // 4b) connect 已发起，现在才挂超时定时器 —— 而且**投递到 io 线程去挂**。
+    //
+    //     两个理由：
+    //     ① 顺序：先 connect 后 arm，否则"定时器已到期、io 线程在超时回调里
+    //        close socket"会与调用线程的 async_connect 撞同一个对象。
+    //     ② 线程：定时器对象也必须只在一个线程上用。如果直接在这里 arm，
+    //        connect 秒成（回环）时完成回调（io 线程）会在调用线程 arm 到一半
+    //        时就 cancel 这个定时器 —— 这正是 TSan 抓到的竞争。
+    //        投递之后，timer 的一切访问（arm / cancel / 到期）都在 io 线程上。
+    if (timeout_ms > 0) {
+        try {
+            asio::post(op->sock.get_executor(), [op, weak_impl, timeout_ms] {
+                if (op->finished.load(std::memory_order_acquire)) {
+                    return;   // connect 已经有结果了，不用再计时
+                }
+                op->timer.expires_after(std::chrono::milliseconds(timeout_ms));
+                op->timer.async_wait([op](const error_code_t& timer_ec) {
+                    if (timer_ec) {
+                        return;   // 被完成路径取消
+                    }
+                    // 超时：先关 socket（打断在途 connect），再以 timed_out 通知。
+                    error_code_t ignored;
+                    op->sock.close(ignored);
+                    finish_connect_fail(op, asio::error::timed_out);
+                });
+            });
+        } catch (...) {
+            // io_context 已停止：不会有超时回调，交给 connect 自身收敛。
+        }
+    }
+
     return error_code_t{};
 }
 
@@ -1065,6 +1108,12 @@ void Mechanism::close_all() noexcept
     {
         std::lock_guard<std::mutex> lock(m_impl->listeners_mutex);
         m_impl->listeners.clear();
+        // ★ bound_addr 与 listeners/bound_keys **同生同灭**：
+        //   它是"监听 key → 实际绑定地址"的账本，listener 都销毁了还留着，
+        //   会让 listening_addresses() 报告根本没在监听的地址；更糟的是
+        //   `listen(:0)` 走 emplace 时旧 key 还在 → **不覆盖** →
+        //   local_address_of(any:0) 返回上一轮的端口（用户拿它去连/写 SDP 就是错的）。
+        m_impl->bound_addr.clear();
         // ★ 必须同步清理 bound_keys：它是~实际绑定地址~的去重账本，
         //   若不同步，`close_all()` 之后再 listen 同一端口会被误判为
         //   duplicate_endpoint（实测：close_all() 后无法在同一端口重新监听）。
@@ -1080,9 +1129,48 @@ void Mechanism::close_all() noexcept
     }
 
     // 3) 放弃未完成的 connect（不回调 on_linkfail：属于主动放弃）。
+    //
+    //    以前这里只 clear() 账本 —— 但 ConnectOp 还被在途的 async_connect /
+    //    async_wait 的 handler 强持有，照常完成：成功就 make_endpoint 注册进
+    //    endpoints 表、**on_linkup 在 close_all 之后送达**（文档承诺的
+    //    "取消、不回调"完全不成立）。
+    //
+    //    现在把每个 op 投递到它自己的 io 线程上收尾：置 finished 让两个
+    //    完成 handler 静默退出，再 cancel/close 掉 socket 与定时器。
+    //    **必须 post，不能同步 close** —— 同一 socket 对象的跨线程操作是
+    //    数据竞争（P0-4 同款教训）。
     {
-        std::lock_guard<std::mutex> lock(m_impl->connects_mutex);
-        m_impl->pending_connects.clear();
+        std::vector<std::shared_ptr<ConnectOp>> abandoned;
+        {
+            std::lock_guard<std::mutex> lock(m_impl->connects_mutex);
+            abandoned.reserve(m_impl->pending_connects.size());
+            for (auto& kv : m_impl->pending_connects) {
+                if (auto op = kv.second.lock()) {
+                    abandoned.push_back(std::move(op));
+                }
+            }
+            m_impl->pending_connects.clear();
+        }
+
+        for (const std::shared_ptr<ConnectOp>& op : abandoned) {
+            if (!op) {
+                continue;
+            }
+            // 先置位（完成 handler 一看到就静默退出），再投递收尾。
+            op->finished.store(true, std::memory_order_release);
+            auto sock_exec = op->sock.get_executor();
+            try {
+                asio::post(sock_exec, [op]() noexcept {
+                    error_code_t ignored;
+                    op->timer.cancel(ignored);
+                    if (op->sock.is_open()) {
+                        op->sock.close(ignored);
+                    }
+                });
+            } catch (...) {
+                // io_context 已停止：socket 由 ConnectOp 析构收拾。
+            }
+        }
     }
 
     // 4) 不销毁 io 池 —— 按契约，close_all 之后仍可 listen()/connect()，

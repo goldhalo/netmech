@@ -34,6 +34,10 @@ public:
     std::vector<std::deque<std::function<void()>>> queues;
 
     std::vector<std::thread>  threads;
+    /// 创建后**永不改动**的线程 id 表（供 in_worker_thread() 查询）。
+    /// 不能直接查 `threads`：shutdown() 会把它 swap 走并 join，
+    /// 关停窗口里查它会返回假，而它的典型用途恰恰是"关停期判断"。
+    std::vector<std::thread::id> thread_ids;
 
     std::atomic<bool>         stop{false};
     std::atomic<bool>         running{false};
@@ -93,19 +97,34 @@ public:
 
     void shutdown()
     {
+        // ★ 锁内**取走**线程句柄，锁外 join —— 老实现是"锁内只置标志、
+        //   锁外 join 并 clear()"，而 in_worker_thread() 正在无锁遍历同一个
+        //   vector：等到 clear() 析构里面的 std::thread 对象时，遍历方读到的是
+        //   已析构对象（UB）。take-then-join 是同库 ~IoPool 的既有写法。
+        std::vector<std::thread> local;
         {
             std::lock_guard<std::mutex> lk(mtx);
             if (stop.exchange(true, std::memory_order_acq_rel)) {
-                return;
+                return;   // 幂等
             }
+            local.swap(threads);
         }
         cv.notify_all();
-        for (auto& t : threads) {
-            if (t.joinable()) {
-                t.join();
+
+        // ★ 自 join 防护：从 worker 任务里调 stop() 时，join 自己会抛
+        //   std::system_error(resource_deadlock_would_occur)，且异常会穿回
+        //   用户任务。跳过自身（它随即从任务返回并自行退出）。
+        const std::thread::id self = std::this_thread::get_id();
+        for (auto& t : local) {
+            if (!t.joinable()) {
+                continue;
             }
+            if (t.get_id() == self) {
+                t.detach();
+                continue;
+            }
+            t.join();
         }
-        threads.clear();
         running.store(false, std::memory_order_release);
     }
 };
@@ -157,6 +176,14 @@ std::shared_ptr<WorkerPool> WorkerPool::create(Config cfg, std::error_code& ec)
         return nullptr;
     }
 
+    {
+        std::lock_guard<std::mutex> lk(self->m_impl->mtx);
+        self->m_impl->thread_ids.reserve(self->m_impl->threads.size());
+        for (const auto& t : self->m_impl->threads) {
+            self->m_impl->thread_ids.push_back(t.get_id());
+        }
+    }
+
     self->m_impl->running.store(true, std::memory_order_release);
     return self;
 }
@@ -187,10 +214,14 @@ bool WorkerPool::in_worker_thread() const noexcept
     if (!m_impl) {
         return false;
     }
-    // 简单判断：当前线程 id 是否在池里
+    // ★ 查的是**创建后不变**的 id 表，不是 threads：
+    //   shutdown() 会把 threads 里的句柄 swap 走并 join（join 期间线程还在
+    //   收尾），如果查 threads 就会在关停窗口里返回假。
+    //   加锁是为了与"创建时的填充"互斥（填充阶段之后只读）。
     const auto self = std::this_thread::get_id();
-    for (const auto& t : m_impl->threads) {
-        if (t.get_id() == self) {
+    std::lock_guard<std::mutex> lk(m_impl->mtx);
+    for (const auto& id : m_impl->thread_ids) {
+        if (id == self) {
             return true;
         }
     }

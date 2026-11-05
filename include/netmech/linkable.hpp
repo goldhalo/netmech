@@ -4,7 +4,7 @@
 //  文件    : netmech/linkable.hpp
 //  用途    : 定义 Linkable 抽象接口。调用方实现本接口，并以 std::weak_ptr 的
 //            形式交给 Mechanism（全局单一订阅者）或单次 listen/connect。
-//  依赖    : Boost 1.74 + 标准库。不含 <iostream>。
+//  依赖    : 独立 Asio + 标准库。不含 <iostream>。
 //  编码    : UTF-8
 //
 //  ★ 与旧 IAsioLinkable 的关键差异

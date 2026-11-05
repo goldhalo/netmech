@@ -179,7 +179,7 @@ enum class NetErrc {
     ok = 0,
     not_initialized,
     already_initialized,
-    invalid_argument,     ///< setParallelNum(0)、空 buffer 等
+    invalid_argument,     ///< 参数非法（线程数为 0、空 buffer、端口 0 等）
     duplicate_endpoint,   ///< 重复 listen 同一地址
     buffer_full,          ///< 发送队列拒绝（反压）
     not_connected,

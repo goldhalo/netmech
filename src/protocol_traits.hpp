@@ -4,7 +4,7 @@
 //  文件    : netmech/protocol_traits.hpp
 //  用途    : 把「协议相关的类型与操作」从实现中抽离出来，使同一套
 //            io_context / 状态机 / 生命周期代码能同时服务 TCP（流）与 UDP（数据报）。
-//  依赖    : Boost 1.74 + 标准库。不含 <iostream>。
+//  依赖    : 独立 Asio + 标准库。不含 <iostream>。
 //  编码    : UTF-8
 //
 //  ── 为什么需要这一层 ────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@
 //      TCP:  protocol_traits<asio::ip::tcp>
 //      UDP:  protocol_traits<asio::ip::udp>
 //
-//  ── 与 Boost.Asio 自带 Protocol 概念的关系 ─────────────────────────────────
+//  ── 与 Asio 自带 Protocol 概念的关系 ─────────────────────────────────
 //  `ip::tcp` 与 `ip::udp` 本身就已满足 Asio 的 Protocol 概念（提供
 //  `endpoint` / `socket` / `acceptor` 等嵌套类型）。所以本 traits **不重造轮子**，
 //  只做两件事：
@@ -25,7 +25,7 @@
 //       让上层用 `if constexpr` 分支而不是到处写 `#ifdef` 或特化重载。
 //
 //  ★ 注意：不要用 asio::generic::basic_endpoint 做统一地址类型。
-//    实测（Boost 1.74 / MSVC 2019）它**不能**从 ip::udp::endpoint 构造，
+//    实测（独立 Asio / MSVC 2019）它**不能**从 ip::udp::endpoint 构造，
 //    会报 C2440。统一地址请走「模板参数 + 下层转换」的路线。
 // =============================================================================
 #pragma once
@@ -79,7 +79,7 @@ inline constexpr bool is_datagram_protocol_v =
 
 /// 协议是否提供 acceptor（TCP 有，UDP 无）。
 ///
-/// 实测事实（Boost 1.74）：`asio::ip::udp` **没有** `acceptor` 嵌套类型，
+/// 实测事实（独立 Asio）：`asio::ip::udp` **没有** `acceptor` 嵌套类型，
 /// 只有 `socket` / `endpoint` / `resolver`。所以这里既要按语义区分（UDP 无
 /// accept 概念），也要保证在 UDP 下**不去实例化** `Protocol::acceptor`。
 ///

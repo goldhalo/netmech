@@ -342,6 +342,15 @@ struct Conn::Impl : public std::enable_shared_from_this<Conn::Impl> {
     bool                       linger_zero = false; ///< true = 关闭走 RST（跳过 shutdown）
     std::weak_ptr<Linkable>        linkable;      ///< 订阅者（weak；旧实现为裸指针）
     std::shared_ptr<ConnHandler>   handler;       ///< 协议处理器（库强持有到 on_close）
+
+    /// `finish_handler()` 之后留的一份"退休快照"。
+    ///
+    /// 为什么需要：`on_open` 里可以合法地先发起一笔 read/write 再返回 false
+    /// （初始化校验失败）。那时这笔 IO 已经**受理**（`write()` 返回过 true），
+    /// 但 handler 已被 finish_handler 释放 —— 队列里那笔 request 稍后完成时
+    /// 找不到 owner，回调被静默丢弃，违反 "受理 ⇒ 恰好一次回调"（V3）。
+    /// 用这份快照兜底派发**错误回调**（不再调 on_close，语义不变）。
+    std::shared_ptr<ConnHandler>   retired_handler;
     bool                           handler_inited = false;   ///< 是否配平 on_close
     bool                           link_established = false; ///< 是否喂 on_linkdown
 

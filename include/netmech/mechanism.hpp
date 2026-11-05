@@ -4,7 +4,7 @@
 //  文件    : netmech/mechanism.hpp
 //  用途    : 定义 Mechanism 类（线程池 + accept 循环 + connect 超时控制）及其
 //            Config。
-//  依赖    : Boost 1.74 + 标准库。不含 <iostream>。
+//  依赖    : 独立 Asio + 标准库。不含 <iostream>。
 //  编码    : UTF-8
 //
 //  ★ 与旧 CAsioRuntime 的关键差异
@@ -179,7 +179,8 @@ public:
     /// @param[in] linkable 为该监听器服务的订阅者（weak_ptr）。为空
     ///                     （已过期或未设置）时，退回 set_linkable() 设置的
     ///                     全局订阅者；仍为空则新连接会被立即关闭。
-    /// @param[in] backlog  已连接但尚未 accept 的队列长度上限，默认 SOMAXCONN。
+    /// @param[in] backlog  已连接但尚未 accept 的队列长度上限。传 0 用本库默认值
+    ///                    （`kDefaultBacklog = 128`；**刻意不用** SOMAXCONN，理由见本文件开头）。
     /// @return 受理成功返回 `std::error_code{}`（布尔判**假**）。
     ///         失败返回 `make_boost_error_code(...)`，可能值：
     ///         * `NetErrc::duplicate_endpoint` 同一 ip:port 已在本实例监听；

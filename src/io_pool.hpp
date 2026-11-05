@@ -4,7 +4,7 @@
 //  文件    : netmech/executor.hpp
 //  用途    : 定义 IoPool —— N 个 io_context + work_guard + 1 线程/个 的运行时
 //            执行底座；以及 timer / strand 工厂约定。
-//  依赖    : Boost 1.74 + 标准库。不含 <iostream>。
+//  依赖    : 独立 Asio + 标准库。不含 <iostream>。
 //  编码    : UTF-8
 //
 //  ★ 与旧 CIoServicePool 的关键差异（缺陷 A-09 / A-12 / B-02）
@@ -36,7 +36,7 @@
 // 依赖：本头是**公共头**，因此不得包含 src/ 下的内部前置头
 // （netmech_srcpch.hpp 只在库内部可见，公共头引用它会导致下游
 //  "C1083: 无法打开包括文件 netmech_srcpch.hpp"）。
-// 这里显式引入本头真正需要的 Boost.Asio 组件与标准库。
+// 这里显式引入本头真正需要的 Asio 组件与标准库。
 // -----------------------------------------------------------------------------
 #include <atomic>
 #include <cstddef>
@@ -178,7 +178,8 @@ public:
     /// 用途：在回调里判断"我是不是在 io 线程上"，从而避免在那里做
     /// 阻塞操作（如等待本池关停 —— 那会自我死锁）。
     ///
-    /// @note 线程安全；池已关停时返回 false。
+    /// @note 线程安全。**只看线程身份**，不看池是否已关停 —— 关停中的 io 线程
+    ///       同样返回 true（这正是关停期需要它的原因）。
     [[nodiscard]] bool is_io_thread() const noexcept;
 
     /// 析构（**正常路径不会被调用** —— 本类唯一实例由 `global()` 创建且进程级）。
@@ -215,16 +216,31 @@ public:
     ///       冗余的 —— 只有当多个线程会 run 同一个 io_context 时才需要它。
     static strand_t make_strand_of(io_context_t& ioc) noexcept;
 
-    /// 停止全部 io 线程；幂等。通常在**进程退出前**调用一次。
+    /// 停止投递并唤醒全部 io 线程；幂等。**不 join**。
     ///
-    /// 顺序严格为：释放 work_guard → `stop()` 所有 io_context → 释放内部锁 →
-    /// `join()` 所有线程。**join 时不持有任何内部互斥量**，因此 io 线程里申请
-    /// 本类锁不会与关停互锁。
+    /// 顺序为：释放 work_guard → `stop()` 所有 io_context。
+    /// 线程句柄仍在池里，等 `join_threads()`（或析构）回收。
     ///
     /// @note **`stop_all()` 之后 `io_context` 依然有效**（只是不再执行新任务）：
     ///       库内对象照常可以安全析构，它们的 socket / timer 析构不会出问题。
+    /// @note 已排入队列但**尚未执行**的完成处理会被丢弃（`stop()` 的语义）——
+    ///       想让它跑完再停，别调 `stop()`，直接 `join_threads()` 让队列排空。
     /// @note 停止后**不要**再建立新连接（投递的任务不会被执行）。
     void stop_all() noexcept;
+
+    /// 等全部 io 线程退出（join）。幂等；join 时不持有任何内部互斥量。
+    ///
+    /// @par 为什么单独一个函数
+    ///   `stop_all()` 只"停止投递"，进程退出前还需要把线程收回来，否则
+    ///  `std::thread` 在 joinable 状态下析构会直接 `std::terminate()`。
+    ///   `netmech::shutdown()` 就是 `stop_all() + join_threads()`。
+    ///
+    /// @par 在自己所属的 io 线程上调用
+    ///  join 自己是 UB，这里会**跳过自身**（detach 让它自行退出），
+    ///  其余线程正常 join。正确做法仍是在非 io 线程上调用。
+    ///
+    /// @note join 之后运行时**不可复活**（不支持重新 initialize）。
+    void join_threads() noexcept;
 
 protected:
     /// 由 create() 调用。

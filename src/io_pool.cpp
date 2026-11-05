@@ -334,6 +334,44 @@ IoPool::~IoPool()
     }
 }
 
+void IoPool::join_threads() noexcept
+{
+    std::vector<std::thread> threads;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (joined_) {
+            return;   // 幂等（~IoPool 也会检查）
+        }
+        joined_         = true;
+        stop_requested_ = true;
+        threads.swap(threads_);
+
+        // 让 run() 能在队列排空后自然返回：先释放 work_guard，再 stop 兜底。
+        guards_.clear();
+        for (const auto& ctx : contexts_) {
+            if (ctx) {
+                ctx->stop();
+            }
+        }
+    }
+
+    running_.store(false, std::memory_order_release);
+
+    const std::thread::id self = std::this_thread::get_id();
+    for (auto& t : threads) {
+        if (!t.joinable()) {
+            continue;
+        }
+        if (t.get_id() == self) {
+            // 在本池的 io 线程上调 shutdown()：join 自己是 UB，只能放手。
+            t.detach();
+            continue;
+        }
+        t.join();
+    }
+    // contexts_ **不销毁**：池是进程级单例，销毁交给 ~IoPool。
+}
+
 void IoPool::stop_all() noexcept
 {
     // ── 语义（重要，曾经是个 bug）──────────────────────────────────────────

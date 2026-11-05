@@ -31,9 +31,15 @@ bool initialize(std::size_t io_threads) noexcept
 
 void shutdown() noexcept
 {
-    // 停止全部 io 线程并 join。context 本身**不销毁**（进程级），
-    // 因此此后对已存在对象的析构仍然安全，只是不再执行新任务。
+    // 两段：先停止投递并唤醒线程，再真正 join（兑现 common.hpp 的
+    // "线程 join / 阻塞直到所有 io 线程退出"）。
+    //
+    // 只 stop 不 join 是不够的：`std::thread` 在 joinable 状态下析构会
+    // 直接 std::terminate()，而且调用方拿不到"线程真的走了"这个保证。
+    //
+    // context 本身**不销毁**（进程级单例），此后对已存在对象的析构仍然安全。
     IoPool::global().stop_all();
+    IoPool::global().join_threads();
 }
 
 } // namespace netmech

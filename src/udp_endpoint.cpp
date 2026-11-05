@@ -237,9 +237,6 @@ struct UdpEndpoint::Impl : public std::enable_shared_from_this<UdpEndpoint::Impl
         if (closing.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
-        error_code_t ignored;
-        socket.cancel(ignored);
-        socket.close(ignored);
 
         std::shared_ptr<Impl> self;
         try {
@@ -247,7 +244,17 @@ struct UdpEndpoint::Impl : public std::enable_shared_from_this<UdpEndpoint::Impl
         } catch (...) {
             return;
         }
-        asio::post(io, [self]() { self->finish_close(); });
+
+        // ★ socket 的 cancel/close **必须**在 io 线程上做：asio 的 socket
+        //   对象不是线程安全的，调用线程直调会与 io 线程在途的
+        //   async_receive_from / do_send 撞同一个对象（数据竞争，Windows 上
+        //   表现为对象内部状态错乱，POSIX 上误关 fd 可能带走别的连接）。
+        asio::post(io, [self]() {
+            error_code_t ignored;
+            self->socket.cancel(ignored);
+            self->socket.close(ignored);
+            self->finish_close();
+        });
     }
 
     void finish_close() noexcept
@@ -574,8 +581,28 @@ std::shared_ptr<UdpEndpoint> create_udp_endpoint_impl(asio::io_context&         
     if (cfg.multicast_group.has_value()) {
         const asio::ip::address group = detail::to_asio_address(*cfg.multicast_group);
         if (group.is_v4()) {
-            impl->socket.set_option(asio::ip::multicast::join_group(group.to_v4()), ec);
+            // ★ 必须用**双参**形式把网卡带上。
+            //   单参 join_group(group) 等价于 INADDR_ANY —— 由路由表选网卡，
+            //   多网卡机器上组播流在副网卡时会永远收不到，而用户明明配了
+            //   multicast_interface（以前这个字段根本没被读过）。
+            if (cfg.multicast_interface.has_value()) {
+                const asio::ip::address iface =
+                    detail::to_asio_address(*cfg.multicast_interface);
+                if (iface.is_v4()) {
+                    impl->socket.set_option(
+                        asio::ip::multicast::join_group(group.to_v4(),
+                                                        iface.to_v4()), ec);
+                } else {
+                    // 配了非 v4 网卡地址：退回系统选择，但报给调用方
+                    impl->socket.set_option(asio::ip::multicast::join_group(group.to_v4()), ec);
+                }
+            } else {
+                impl->socket.set_option(asio::ip::multicast::join_group(group.to_v4()), ec);
+            }
         } else {
+            // IPv6 的 join_group 要的是**接口索引**而不是地址，地址→索引需要
+            // 平台 API（if_nametoindex / GetBestInterfaceEx），C++17 没有标准封装。
+            // 目前仍由系统选择网卡；multicast_interface 对 IPv6 不生效。
             impl->socket.set_option(
                 asio::ip::multicast::join_group(group.to_v6(), 0), ec);
         }

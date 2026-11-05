@@ -11,6 +11,18 @@
 
 #include <asio/serial_port.hpp>
 
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#else
+#  include <termios.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -114,26 +126,36 @@ public:
         if (read_pending.exchange(true)) {
             return false;   // 已有一笔在途
         }
+        arm_read(buf);
+        return true;
+    }
 
-        // 持有 owner，保证回调前内存有效
-        pending_read = buf;
-
+    /// 挂一笔读。**buf 由 lambda 自己持有**（拷贝进闭包），
+    /// 不再放进共享成员 —— 那样"名额已释放、共享缓冲还没取走"的窗口里，
+    /// 另一线程的 read() 会与 io 线程并发读写同一个 shared_ptr（P0-1）。
+    void arm_read(Buf buf)
+    {
         auto self = shared_from_this();
         port.async_read_some(
             asio::buffer(buf.data, buf.size),
-            [self](const error_code_t& ec, std::size_t n) {
+            [self, buf](const error_code_t& ec, std::size_t n) {
+                if (ec == asio::error::operation_aborted
+                    && !self->closing.load(std::memory_order_acquire)) {
+                    // 被 flush 之类的 cancel 打断：名额不释放，原样重挂这笔读。
+                    // （关闭流程里的 abort 不在这里，见下面。）
+                    self->arm_read(buf);
+                    return;
+                }
+
                 self->read_pending.store(false);
-                const Buf b = self->pending_read;
-                self->pending_read = {};
 
                 if (ec) {
-                    self->handler->on_read(ec, b, 0);
+                    invoke_void([&] { self->handler->on_read(ec, buf, 0); });
                     self->finish_close();
                     return;
                 }
-                self->handler->on_read({}, b, n);
+                invoke_void([&] { self->handler->on_read({}, buf, n); });
             });
-        return true;
     }
 
     // -------------------------------------------------------------------------
@@ -198,7 +220,15 @@ public:
                         self->queued_bytes -= done.size;
                     }
                 }
-                self->handler->on_write(ec, done, n);
+                invoke_void([&] { self->handler->on_write(ec, done, n); });
+
+                if (ec == asio::error::operation_aborted
+                    && !self->closing.load(std::memory_order_acquire)) {
+                    // flush_output 取消掉的写：这一笔的数据确实丢了（已回调告知），
+                    // 但端口不该因此关闭 —— 继续发后面排队的。
+                    self->do_write();
+                    return;
+                }
                 if (ec) {
                     self->finish_close();
                     return;
@@ -216,13 +246,34 @@ public:
         if (closed_.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
+        // ★ 先置 closing 再 cancel/close：完成回调靠它区分
+        //   "端口在关"（abort 属正常收敛）与 "flush 打断"（要重挂）。
+        closing.store(true, std::memory_order_release);
+
         const bool was_open = open_.exchange(false, std::memory_order_acq_rel);
         error_code_t ec;
         port.close(ec);
 
         if (was_open && handler) {
-            handler->on_close();
+            invoke_void([&] { handler->on_close(); });
         }
+    }
+
+    /// flush 清缓冲：投递到 io 线程，用平台 API 只清队列、**不 cancel 在途 IO**。
+    void post_flush(bool input)
+    {
+        auto self = shared_from_this();
+        asio::post(port.get_executor(), [self, input] {
+            if (!self->port.is_open()) {
+                return;
+            }
+#if defined(_WIN32)
+            ::PurgeComm(reinterpret_cast<HANDLE>(self->port.native_handle()),
+                        input ? PURGE_RXCLEAR : PURGE_TXCLEAR);
+#else
+            ::tcflush(self->port.native_handle(), input ? TCIFLUSH : TCOFLUSH);
+#endif
+        });
     }
 
     void close() { finish_close(); }
@@ -268,10 +319,10 @@ public:
 
     std::atomic<bool> open_{false};
     std::atomic<bool> closed_{false};
+    std::atomic<bool> closing{false};   ///< 关闭流程已开始（区分 abort 的来源）
 
-    // 读
+    // 读：在途名额（缓冲本身由完成回调的闭包持有，不在这里）
     std::atomic<bool> read_pending{false};
-    Buf               pending_read{};
 
     // 写
     std::mutex        send_mtx;
@@ -336,16 +387,14 @@ bool SerialPort::drain(std::error_code& ec)
 void SerialPort::flush_input()
 {
     if (m_impl) {
-        error_code_t ec;
-        m_impl->port.cancel(ec);
+        m_impl->post_flush(/*input=*/true);
     }
 }
 
 void SerialPort::flush_output()
 {
     if (m_impl) {
-        error_code_t ec;
-        m_impl->port.cancel(ec);
+        m_impl->post_flush(/*input=*/false);
     }
 }
 

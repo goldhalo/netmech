@@ -4,8 +4,8 @@
 //  文件    : netmech/net.hpp
 //  用途    : 一次性引入全部公共接口。业务代码通常只需要
 //              #include <netmech/net.hpp>
-//  依赖    : 标准库 + 独立 Asio（只有 common.hpp 引 <asio/error.hpp>，
-//            用于错误码常量，不拖入网络栈）。
+//  依赖    : 标准库。**公共头一行 asio 都不引**（CI 有门禁守着）；
+//            Asio 只在 src/ 内部使用，使用方不需要准备它。
 //  编码    : UTF-8
 //
 //  ★ 三条契约（先记住这三条，其余都是细节）
@@ -68,12 +68,9 @@
 #include "netmech/mechanism.hpp"
 
 // -----------------------------------------------------------------------------
-// 命名空间速记
+// 地址与缓冲：用本库自己的类型
 // -----------------------------------------------------------------------------
-//  netmech 内已提供：
-//    netmech::tcp            == asio::ip::tcp
-//    netmech::ip             == asio::ip
-//    netmech::mutable_buffer == asio::mutable_buffer
-//    netmech::const_buffer   == asio::const_buffer
-//
-//  因此调用方可写：netmech::tcp::endpoint，而不必写全限定名。
+//  公共头不暴露 asio 类型，地址一律用 `netmech::Address{host, port}`，
+//  缓冲用 `netmech::Buf` / `netmech::ConstBuf`。
+//  **没有** netmech::tcp / netmech::ip / netmech::mutable_buffer 之类的别名 ——
+//  早期文档里出现过那种写法，现在不成立。
