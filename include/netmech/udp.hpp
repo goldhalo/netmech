@@ -428,9 +428,14 @@ public:
     /// @par 生命周期
     ///  库持有本端点到 `fn` 执行完 —— 传进来的 lambda 里不必自己保活端点。
     ///
+    /// @param[in] allow_inline `true`（默认）用 `dispatch`：已在该 io 线程就
+    ///            同步执行。**关闭这类必须排队的动作请传 `false`** —— 否则从
+    ///            io 线程内部调用时会插到已排队的发送前面，把没发出去的数据
+    ///            连带资源一起丢掉。传 `false` 时一律 `post`，严格 FIFO。
+    ///
     /// @note 端点已关闭时仍然会执行（io 线程还活着），由调用方自己判断要不要干活。
     /// @note 线程安全、noexcept。
-    void post(std::function<void()> fn) noexcept;
+    void post(std::function<void()> fn, bool allow_inline = true) noexcept;
 
     /// 关闭端点。幂等。
     ///
