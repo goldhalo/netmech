@@ -28,7 +28,8 @@
 //    （读写完成、保活超时、close 完成）都发生在**同一条 io 线程**上、天然串行，
 //    `in_flight` 标记与队列的读写也全在这条线程内完成，
 //    因此不存在旧代码"队首即飞行中"的数据竞态。
-//    ★ 本库**不使用 strand**（机制与前提见 executor.hpp 的线程模型说明）。
+//    ★ 本库**不使用 strand**：靠"1 个 io_context 恰好 1 条线程"这条不变量
+//      （机制见 `src/io_pool.cpp` 末尾的说明）。
 //  * `async_*` / `close()` / `set_send_queue_limit()` / `enable_*_keepalive()` /
 //    `is_open()` / `id()` **可以从任意线程调用**（内部用 post 或原子量
 //    保证安全）。
@@ -52,7 +53,6 @@
 
 // 本头**不引 asio**：对外只暴露 netmech::Address，asio 的 endpoint 不出现在接口上。
 
-#include "netmech/common.hpp"
 #include "netmech/common.hpp"
 #include "netmech/iohandler.hpp"
 #include "netmech/linkable.hpp"

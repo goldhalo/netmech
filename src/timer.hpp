@@ -97,9 +97,16 @@ public:
     ///
     /// @note 对 `after()` 创建的定时器，语义是"从此刻起再等 interval"。
     /// @note `interval <= 0` 时静默忽略。
+    /// @warning **只能在该定时器所属的 io 线程上调用**（定时器对象不是线程安全的）。
+    ///          目前所有调用点都在 io 线程上（`UdpEndpoint::set_timer` 经 dispatch
+    ///          进来）；从别的线程调需要自己先 post 过去。
     void restart(std::chrono::milliseconds interval) noexcept;
 
     /// 取消（幂等）。取消后不再回调，可以重新 restart 复用。
+    ///
+    /// @warning 同 `restart()`：**只能在该定时器所属的 io 线程上调用**。
+    ///          本类是内部实现（src/timer.hpp），刻意不做 post 兜底 —— 那会
+    ///          让"谁在什么线程上动定时器"变得不可见，反而更难查。
     void cancel() noexcept;
 
     /// 是否处于活动状态（未取消、未因 owner 失效而停止）。

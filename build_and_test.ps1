@@ -1,17 +1,17 @@
 ﻿<#
 .SYNOPSIS
-    netmech 一键构建 + 单元测试脚本（Windows / MSVC 2019 / x64）。
+    netmech 一键构建 + 单元测试脚本（Windows / MSVC / x64）。
 
 .DESCRIPTION
     流水线：
       1. 调用 vcvars64.bat 初始化 MSVC 环境
-      2. cmake -S . -B build -G "Visual Studio 16 2019" -A x64
+      2. cmake -S . -B build -G "Visual Studio 17 2022" -A x64
       3. cmake --build build --config Release
       4. 运行 netmech_ut.exe，解析通过/失败统计
       5. 失败时 exit 1
 
 .PARAMETER Config
-    Release（默认）或 Debug。Debug 会使用 /MDd 并链接 Boost 的 -gd- 版本。
+    Release（默认）或 Debug。两者都用 /MD 或 /MDd，**没有第三方动态库**可链。
 
 .PARAMETER Clean
     先删除 build 目录再配置。
@@ -19,8 +19,8 @@
 .PARAMETER BuildDir
     构建目录，默认 <脚本目录>\build。
 
-.PARAMETER BoostRoot
-    Boost 根目录，默认 D:\3rdlibsTms\3rdlibs。
+.PARAMETER Vcvars
+    vcvars64.bat 的完整路径。默认按 VS2022 → VS2019 的顺序自动探测。
 
 .PARAMETER NoExamples
     不构建示例程序。
@@ -42,7 +42,7 @@ param(
 
     [string]$BuildDir,
 
-    [string]$BoostRoot = 'D:\3rdlibsTms\3rdlibs',
+    [string]$Vcvars,
 
     [switch]$NoExamples,
 
@@ -54,7 +54,17 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $BuildDir) { $BuildDir = Join-Path $ScriptDir 'build' }
 
-$Vcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvars64.bat'
+if (-not $Vcvars) {
+    # 常见安装位置的探测顺序：VS2022 → VS2019，Community / Professional / Enterprise / BuildTools
+    $candidates = @()
+    foreach ($ver in @('2022', '2019')) {
+        foreach ($edition in @('Community', 'Professional', 'Enterprise', 'BuildTools')) {
+            $candidates += "C:\Program Files\Microsoft Visual Studio\$ver\$edition\VC\Auxiliary\Build\vcvars64.bat"
+            $candidates += "C:\Program Files (x86)\Microsoft Visual Studio\$ver\$edition\VC\Auxiliary\Build\vcvars64.bat"
+        }
+    }
+    $Vcvars = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
 
 # ---------------------------------------------------------------------------
 # 辅助输出
@@ -119,21 +129,11 @@ if (-not $cmakeExe) {
 Write-Ok "cmake: $cmakeExe"
 (& $cmakeExe --version | Select-Object -First 1) | ForEach-Object { Write-Host "       $_" }
 
-if (-not (Test-Path $Vcvars)) {
-    Write-Err "找不到 vcvars64.bat: $Vcvars"
+if (-not $Vcvars -or -not (Test-Path $Vcvars)) {
+    Write-Err "找不到 vcvars64.bat；请用 -Vcvars 显式指定（或安装 VS2022 的 C++ 生成工具）"
     exit 1
 }
 Write-Ok "vcvars64: $Vcvars"
-
-$boostVerHpp = Join-Path $BoostRoot 'include\boost\version.hpp'
-if (-not (Test-Path $boostVerHpp)) {
-    Write-Err "Boost 头文件不存在: $boostVerHpp"
-    exit 1
-}
-$verMatch = Select-String -Path $boostVerHpp -Pattern '#define BOOST_LIB_VERSION "([^"]+)"' | Select-Object -First 1
-if ($verMatch) {
-    Write-Ok "boost: $BoostRoot ($($verMatch.Matches[0].Groups[1].Value))"
-}
 
 $netHeader = Join-Path $ScriptDir 'include\netmech\net.hpp'
 if (-not (Test-Path $netHeader)) {
@@ -231,9 +231,8 @@ if ($NoExamples) { $examplesOn = 'OFF' }
 $cmakeArgs = @(
     '-S', $ScriptDir,
     '-B', $BuildDir,
-    '-G', 'Visual Studio 16 2019',
+    '-G', 'Visual Studio 17 2022',
     '-A', 'x64',
-    ("-DNETMECH_BOOST_ROOT=" + $BoostRoot),
     '-DNETMECH_BUILD_TESTS=ON',
     ("-DNETMECH_BUILD_EXAMPLES=" + $examplesOn)
 )
@@ -287,9 +286,6 @@ if (-not $exe) {
 }
 Write-Ok "测试程序: $exe"
 
-# 让运行时能找到 Boost DLL
-$boostBin = Join-Path $BoostRoot 'bin'
-if (Test-Path $boostBin) { $env:Path = $boostBin + ';' + $env:Path }
 $env:Path = (Split-Path $exe) + ';' + $env:Path
 
 $testArgs = @()
@@ -330,7 +326,7 @@ if ($null -ne $casesFail)  { Write-Host "  用例失败 : $casesFail" }
 if ($null -ne $checksPass) { Write-Host "  断言通过 : $checksPass" }
 if ($null -ne $checksFail) { Write-Host "  断言失败 : $checksFail" }
 Write-Host "  构建配置 : $Config / x64"
-Write-Host "  Boost    : $BoostRoot"
+Write-Host "  生成器   : Visual Studio 17 2022 / x64"
 Write-Host "  测试程序 : $exe"
 Write-Host ''
 

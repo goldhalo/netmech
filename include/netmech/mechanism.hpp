@@ -101,7 +101,7 @@ public:
     ///
     /// @note ★ io 线程数**不在这里配置** —— 运行时是**进程级**的，
     ///       线程数由 `IoPool::initialize(threads)` 在进程启动时**一次性**决定，
-    ///       之后**不可更改**（详见 `executor.hpp` 的契约）。
+    ///       之后**不可更改**（契约见 `netmech/common.hpp` 的 initialize/shutdown）。
     struct Config {
         /// 单连接发送队列的**字节总量**上限（反压阈值），默认 2 MiB。
         /// 超限时 async_write 返回 false（NetErrc::buffer_full），不断链。

@@ -272,7 +272,7 @@ IoPool::~IoPool()
         // Debug 下尽早暴露误用：这不是"可用"的路径，只是"不崩"的兜底。
         assert(false &&
                "IoPool 在本池的 io 线程上被析构！"
-               "请勿在回调里释放最后一个 shared_ptr<IoPool>（见 executor.hpp）。");
+               "请勿在回调里释放最后一个 shared_ptr<IoPool>（见 src/io_pool.hpp 的说明）。");
 #endif
 
         std::thread([threads = std::move(threads), ctxs = std::move(ctxs)]() mutable {

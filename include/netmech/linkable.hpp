@@ -7,14 +7,12 @@
 //  依赖    : 独立 Asio + 标准库。不含 <iostream>。
 //  编码    : UTF-8
 //
-//  ★ 与旧 IAsioLinkable 的关键差异
-//  -------------------------------
-//  * 旧接口用裸指针 `IAsioEndPoint*` + `IAsioProtocolHandler*&`，连接对象随时
-//    可能被内部释放，回调里保留指针即悬垂。
-//  * 新接口一律 `std::shared_ptr<Conn>`，**按值传入**：回调期间对象保证
-//    存活；若调用方想延长生命周期（例如交给业务线程慢慢处理），把该
-//    shared_ptr 存起来即可，库不会因此泄漏（Conn 由 socket 关闭后的
-//    内部状态机自行收敛）。
+//  ★ 接口形态（一句话）
+//  ------------------
+//  * 回调拿到的是 `Conn&`（**借用引用**，只在本次回调内有效）。想延长生命
+//    周期就用 `c.shared_from_this()` 取一份 shared_ptr 存起来。
+//  * 返回值是 `std::shared_ptr<ConnHandler>`：**返回非空 = 接受**，库随即
+//    调用 `handler->on_open()`；**返回空 = 拒绝**，库立刻关掉这条连接。
 //  * 订阅关系用 `std::weak_ptr<Linkable>`：订阅者析构后库自动停止投递，
 //    不会访问已销毁对象。
 //
@@ -73,9 +71,9 @@ public:
 
     /// 服务端接受了一个新连接时的回调。
     ///
-    /// @param[in] ep  新建立的连接对象。**按值传入**，回调期间保证有效；
-    ///                若需在回调返回后继续使用，请保存该 shared_ptr。
-    ///                `c.is_open()` 在此刻为 true。
+    /// @param[in] c  新建立的连接。**借用引用**：只在本次回调内有效，
+    ///               要留到回调之后请用 `c.shared_from_this()` 取一份。
+    ///               `c.is_open()` 在此刻为 true。
     /// @return 协议处理器。
     ///         * 非空 -> 库接管该连接，随后调用 `handler->on_open(c)`；
     ///         * 空   -> 视为**拒绝**，库立刻关闭该连接（不给 on_linkdown
@@ -100,9 +98,10 @@ public:
 
     /// 客户端连接建立成功（connect 完成、握手无需额外步骤）时的回调。
     ///
-    /// @param[in] ep  已连接的 Conn，按值传入，语义同 on_accept。
-    /// @param[out] out 协议处理器出口；置空表示拒绝（此时库主动关闭连接，
-    ///                 并**会**随后投递 on_linkdown，因为连接已建立过）。
+    /// @param[in] c  已连接的 Conn（借用引用，语义同 on_accept）。
+    /// @return 协议处理器。返回空表示拒绝 —— 此时库主动关闭连接，并**会**
+    ///         随后投递 on_linkdown（因为连接已经建立过，与 on_accept 拒绝
+    ///         不同：那时连接从未"成功"过，不发 on_linkdown）。
     ///
     /// @par 前置条件
     ///  - Mechanism::connect() 在 timeout_ms 内成功完成三次握手。

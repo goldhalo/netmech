@@ -24,10 +24,21 @@
 // -----------------------------------------------------------------------------
 // 独立 Asio（必须先于其它可能引入 winsock 的头）
 // -----------------------------------------------------------------------------
-#include <asio.hpp>
-#include <asio/steady_timer.hpp>
-#include <asio/strand.hpp>
+// 原来这里是一整包 <asio.hpp>：每个 TU 都会拉进全部 asio 符号。
+// 改成按需 include —— 这一组正好覆盖 src/ 用到的部分（TCP/UDP/串口/定时器/
+// post/dispatch/组播选项）。PCH 里少 200+ 个 asio 头，clean build 快一截。
+#include <asio/io_context.hpp>
 #include <asio/executor_work_guard.hpp>
+#include <asio/strand.hpp>
+#include <asio/steady_timer.hpp>
+#include <asio/ip/tcp.hpp>
+#include <asio/ip/udp.hpp>
+#include <asio/ip/multicast.hpp>
+#include <asio/serial_port.hpp>
+#include <asio/read.hpp>
+#include <asio/write.hpp>
+#include <asio/post.hpp>
+#include <asio/dispatch.hpp>
 #include "protocol_traits.hpp"
 // src 内部头必须是自包含的（各自把依赖引全）。
 // 先包含它，下面的 io_context_t / strand_t / work_guard_t 别名即由其提供，
@@ -58,12 +69,12 @@ namespace netmech {
 // -----------------------------------------------------------------------------
 // Asio 类型别名（独立 Asio 经典接口，非 C++20 any_io_executor）
 // -----------------------------------------------------------------------------
-//  这些别名放在 `netmech` 而不是 `detail`：executor.hpp 是公共头，
-//  IoPool 的签名需要直接引用它们。
+//  这些别名放在 `netmech` 而不是 `detail`：`src/io_pool.hpp` 的签名要直接
+//  引用它们。
 //
-//  ★ `io_context_t` / `io_executor_t` / `strand_t` / `work_guard_t` 已由
-//    上面的 <netmech/executor.hpp> 提供，此处**不再重复定义**（公共头自包含，
-//    内部头复用它的定义，保证两者永远是同一个类型）。
+//  ★ `io_context_t` / `io_executor_t` / `strand_t` / `work_guard_t` 定义在
+//    `src/io_pool.hpp`（内部头，公共头不引 asio）。本 PCH 只给出其余几个
+//    更细的别名，避免重复定义。
 
 /// 保活 / 连接超时定时器：一律使用 steady_clock，规避系统时钟被 NTP 回拨
 /// 或用户改表导致的"定时器静默延后 / 连续补拍"（旧实现用 deadline_timer，即

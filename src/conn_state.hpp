@@ -43,9 +43,7 @@
 
 #include "netmech/common.hpp"
 #include "netmech/conn.hpp"
-#include "netmech/common.hpp"
 #include "io_pool.hpp"
-#include "netmech/common.hpp"
 #include "netmech/iohandler.hpp"
 #include "netmech/linkable.hpp"
 
@@ -325,8 +323,9 @@ struct Conn::Impl : public std::enable_shared_from_this<Conn::Impl> {
     //   若 `pool` 先析构（io_context 随之销毁），随后 `socket` 再析构，就会
     //   访问**已销毁的 io_context** → 退出期 0xC0000005。
     //
-    //   持有 IoPool 的强引用还能保证：用户即便把 `shared_ptr<Conn>` 持有
-    //   到 `~Mechanism` 之后，io_context 的存活期也被延长到不短于该 Conn。
+    //   `pool` 是**裸指针**（不是 shared_ptr）：池是进程级单例、永不销毁，
+    //   所以"强引用"在这里指的是"它一定活着"，而不是引用计数 —— 这也正是
+    //   能在 `~Conn` 里安全访问 io_context 的前提。
 
     IoPool*                        pool = nullptr; ///< 进程级单例，永不为空
     socket_t                       socket;
