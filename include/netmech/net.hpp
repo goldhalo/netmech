@@ -66,6 +66,7 @@
 // 具体类型
 #include "netmech/conn.hpp"
 #include "netmech/mechanism.hpp"
+#include "netmech/port_allocator.hpp"
 
 // -----------------------------------------------------------------------------
 // 地址与缓冲：用本库自己的类型
