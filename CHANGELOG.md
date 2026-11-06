@@ -57,6 +57,22 @@
   并把产物修正为 `serial_check.exe`。
 - 新增 `tools/check_vs_projects.py`：校验 sln/vcxproj 的工程引用、源文件路径、
   GUID、链接库名是否互相自洽（改名后没有 MSBuild 环境时的兜底检查）。
+- 串口写的**发起动作**改投递到 io 线程（`src/serial.cpp`）：此前在调用线程直调
+  `asio::async_write`，会与 io 线程上在途 `async_read_some` 的完成处理并发访问同一个
+  `serial_port` 对象 —— Asio 明令 "shared objects: unsafe"。历史上试过 post 会弄坏
+  modbusmech 的 RTU 链路，那是 `serial.cpp` 重写**之前**的结论；本轮重测 netmech 全量
+  （845 断言）与 modbusmech 全量（380 断言，含全部 RTU pty 用例）×3 轮、TSan 0 报告
+  后正式改掉。
+- 串口读写新增"运行时已停"检查：`shutdown()` 之后 `read()` / `write()` 直接返回 false
+  （以前会把任务投进已停的队列，调用方永远等不到回调）。
+- 文档：`iohandler.hpp` 生命周期段写明"连接关闭后库仍保留 handler 强引用（retired 快照，
+  用于兜底派发已受理未执行的通知）"，并给出规则：handler 不要持有 `Conn` 强引用；
+  若必须持有，请在 `on_close()` 里释放 —— 否则 `Conn::Impl` 与 handler 互持成环泄漏，
+  且 `Mechanism::endpoint_count()` 会正常归零、从计数上看不出来。
+- 文档：`serial.hpp` 补齐写缓冲契约（内存必须有效到 `on_write` 返回）与 `close()` 的真实
+  语义（在途读会先以 `on_read(ec)` 兑现；底层句柄在 io 线程上释放）。
+- 新增回归测试 `serial_cross_thread_writes_with_pending_read`：调用线程持续写 +
+  io 线程不停跑读完成，断言每笔受理恰好一次 `on_write`、数据完整到达对端。
 
 ---
 

@@ -90,6 +90,12 @@ public:
 
     void on_close() override { ++closes; }
 
+    void on_write(std::error_code ec, ConstBuf, std::size_t) override
+    {
+        last_write_ec = ec;
+        ++writes;
+    }
+
     // 回调里再读一次（用同一块缓冲）
     void read(std::uint8_t* p, std::size_t n)
     {
@@ -101,7 +107,9 @@ public:
     std::vector<std::uint8_t>   data;
     std::atomic<int>            reads{0};
     std::atomic<int>            closes{0};
+    std::atomic<int>            writes{0};
     std::error_code             last_ec;
+    std::error_code             last_write_ec;
     bool                        re_read = true;
 };
 
@@ -297,4 +305,92 @@ NETMECH_TEST(serial_rejects_bad_config)
     auto port = SerialPort::create(cfg, h, ec);
     CHECK(port == nullptr);
     CHECK(static_cast<bool>(ec));
+}
+
+// ---------------------------------------------------------------------------
+// 7. 跨线程写 + 在途读（串口写发起竞争的行为级回归）
+//
+//    调用线程持续 write()，同时 io 线程不断跑读完成（on_read 里重挂读）。
+//    修复前：写发起在调用线程直调 async_write，与 io 线程的读完成处理并发
+//    访问同一个 serial_port（asio 明令禁止）。修复后发起统一投递到 io 线程。
+//    这里从**行为**上锁住：每笔受理恰好一次 on_write，数据完整到达对端。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(serial_cross_thread_writes_with_pending_read)
+{
+#if defined(__linux__)
+    Pty pty;
+    REQUIRE(pty.open_());
+
+    SerialConfig cfg;
+    cfg.device    = pty.slave;
+    cfg.baud_rate = 115200;
+
+    std::error_code ec;
+    auto h    = std::make_shared<Sink>();
+    auto port = SerialPort::create(cfg, h, ec);
+    REQUIRE(port != nullptr);
+    h->port = port;
+
+    // 读循环保持"一直有在途读"
+    std::array<std::uint8_t, 64> rbuf{};
+    REQUIRE(port->read(Buf{nullptr, rbuf.data(), rbuf.size()}));
+
+    constexpr int kWriteCount = 200;
+    std::atomic<bool> stop{false};
+
+    // 对端持续喂数据：让 io 线程不停处理读完成并重挂读（制造并发）
+    std::thread feeder([&] {
+        const std::uint8_t p[2] = {0x55, 0xAA};
+        while (!stop.load(std::memory_order_relaxed)) {
+            const ssize_t n = ::write(pty.master, p, sizeof p);
+            (void)n;
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    });
+
+    // 调用线程持续写（队列满时重试）。
+    //
+    // ★ 缓冲区必须活到 on_write：这里用 shared_ptr 当 owner，由库延长生命周期。
+    //   如果传栈上数组、线程退出后还有排队中的写，就是 UAF —— ASan 抓的就是这个
+    //   （本用例第一版就踩了，正好验证了那条契约）。
+    auto payload = std::make_shared<std::array<std::uint8_t, 4>>(
+        std::array<std::uint8_t, 4>{{0xDE, 0xAD, 0xBE, 0xEF}});
+    std::thread writer([&] {
+        int sent = 0;
+        while (sent < kWriteCount && !stop.load(std::memory_order_relaxed)) {
+            if (port->write(ConstBuf{payload, payload->data(), payload->size()})) {
+                ++sent;
+            } else {
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
+            }
+        }
+    });
+
+    // 从 master 收 kWriteCount*4 字节
+    std::size_t       total = 0;
+    const std::size_t want  = static_cast<std::size_t>(kWriteCount) * 4u;
+    std::uint8_t      tmp[256] = {};
+    const auto deadline = std::chrono::steady_clock::now() + 3000ms;
+    while (total < want && std::chrono::steady_clock::now() < deadline) {
+        const ssize_t n = ::read(pty.master, tmp, sizeof tmp);
+        if (n > 0) {
+            total += static_cast<std::size_t>(n);
+        } else {
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    }
+
+    writer.join();
+    stop.store(true, std::memory_order_relaxed);
+    feeder.join();
+
+    CHECK_EQ(total, want);
+    // 每笔受理恰好一次 on_write（等回调追上）
+    REQUIRE(wait_for([&] { return h->writes.load() >= kWriteCount; }, 3000ms));
+    CHECK_EQ(h->writes.load(), kWriteCount);
+
+    port->close();
+#else
+    CHECK(true);
+#endif
 }

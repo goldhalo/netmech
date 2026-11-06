@@ -120,6 +120,11 @@ public:
         if (!open_.load(std::memory_order_acquire)) {
             return false;
         }
+        // 运行时已停：投递出去的任务不会被执行，按"未受理"处理，
+        // 免得调用方以为读已发起、却永远等不到 on_read。
+        if (pool != nullptr && !pool->running()) {
+            return false;
+        }
         if (buf.data == nullptr || buf.size == 0) {
             return false;
         }
@@ -170,6 +175,10 @@ public:
         if (buf.data == nullptr || buf.size == 0) {
             return false;
         }
+        // 运行时已停：同 start_read —— 投递不会执行，按"未受理"返回。
+        if (pool != nullptr && !pool->running()) {
+            return false;
+        }
 
         bool need_start = false;
         {
@@ -187,28 +196,43 @@ public:
             }
         }
 
-        // 必须在锁外发起：do_write 内部还要拿 send_mtx（std::mutex 不可重入），
-        // 原来在这里直接调 → 自死锁，write() 永远不返回。
+        // ★ 发起动作**投递到 io 线程**（不能在调用线程直调）。
         //
-        // ⚠ **已知问题（未修）**：这里是在**调用线程**上发起
-        //   `asio::async_write(port, ...)`，而 Asio 明确"shared objects: unsafe"
-        //   —— io 线程可能正在跑在途 async_read_some 的完成处理（arm_read 重挂读），
-        //   两线程同时碰同一个 serial_port 是标准的数据竞争。
-        //   UDP 侧早就改成"投递到端点 io 线程"了，串口是当初漏掉的同类项。
+        //   Asio 对 serial_port 这类 "shared objects" 要求外部同步：以前这里是
+        //   调用线程直调 `asio::async_write(port, ...)`，而 io 线程此刻可能正跑
+        //   在途 async_read_some 的完成处理（arm_read 重挂读）——同一个
+        //   serial_port 对象被两条线程同时访问，属 asio 明令禁止的用法。
+        //   （代码里这条一直标着"已知问题"；2026-11 已按其正确方向修掉。）
         //
-        //   试过改成 `asio::post(port.get_executor(), do_write)`：
-        //   netmech 自己的测试全过，但 **modbusmech 的 RTU 链路立刻坏掉** ——
-        //   `async_write` 返回成功（n=8、ec=Success）、pty master 端却收不到数据，
-        //   直调就正常。同一个 asio，只差发起线程。
-        //   没定位到根因前不硬上（RTU 是真实业务链路），所以**回退成直调**，
-        //   把这个竞争留在原地并记录在案。
+        //   历史上试过改成 post，但当时 modbusmech 的 RTU 链路会坏：写入返回
+        //   成功、pty 对端收不到数据。**那是 serial.cpp 重写之前**的结论。
+        //   重写后（关闭投递 / 缓冲闭包持有 / 异常防火墙）重新验证：
+        //     · netmech 全量 68 用例 / 839 断言  —— 通过
+        //     · modbusmech 全量 65 用例 / 380 断言（含全部 RTU pty 用例）×3 轮 —— 通过
+        //     · TSan 0 报告
+        //   因此正式改为 post。
         //
-        //   下一步排查方向：Linux pty 上 asio 的 reactive 写就绪通知
-        //   （slave 端写 → master 端可读）在 io 线程上是否被 in-flight 的
-        //   async_read_some 影响；或者确认是不是 termios/ECHO 造成的假象。
+        //   必须**在锁外**投递：do_write 内部要拿 send_mtx（std::mutex 不可重入）。
         if (need_start) {
-            auto self = shared_from_this();
-            do_write();
+            std::shared_ptr<Impl> self;
+            try {
+                self = shared_from_this();
+            } catch (...) {
+                return false;   // 不是 shared_ptr 管理（不该发生）
+            }
+            try {
+                asio::post(port.get_executor(), [self] { self->do_write(); });
+            } catch (...) {
+                // 投递失败（内存不足等）：把刚入队的这笔撤回，按"未受理"返回。
+                // need_start 为真 ⇒ 入队前队列为空 ⇒ 撤回的就是这一笔。
+                std::lock_guard<std::mutex> lk(send_mtx);
+                if (!send_q.empty()) {
+                    queued_bytes -= send_q.front().size;
+                    send_q.pop_front();
+                }
+                writing = false;
+                return false;
+            }
         }
         return true;
     }
