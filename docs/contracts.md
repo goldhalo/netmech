@@ -73,3 +73,16 @@
 
 - 新增"保证"类措辞时，同 PR 必须补对应测试与本表条目；
 - 本表条目被实现改动破坏时，CI 会红（对应测试失败），不要靠改文档"修复"。
+
+## 8. 错误与异常语义（明确）
+
+| # | 契约 | 依据 |
+|---|---|---|
+| 8.1 | **回调内不抛异常**；库内所有用户回调都经 `invoke_void` 包裹，异常不会穿过 io 线程 | `socket_ops`/`conn.cpp` 实现 + 契约测试 |
+| 8.2 | 工厂函数失败**返回 nullptr + 填 `ec`**（`Mechanism`/`SerialPort`/`UdpEndpoint`/`WorkerPool`/`Runtime::create(opts,ec)`） | `test_runtime.cpp` 等 |
+| 8.3 | 不提供 `ec` 的重载（`Runtime::create(opts)`、`Mechanism::create()`）在线程创建失败等**启动期致命错误**上 `std::terminate()` / 抛 `std::bad_alloc`；这类错误无法用 error_code 表达 | `runtime.cpp` 注释 |
+| 8.4 | `NetErrc` 是**唯一**的错误源；`ec == NetErrc::xxx` 可直接比较（std::error_code 的 ADL 比较） | `common.hpp` |
+| 8.5 | `make_boost_error_code()` / `from_boost_error_code()` 是**兼容层（legacy）**：仅为既有调用方保留，新代码请用 `std::error_code` + `NetErrc` | `common.hpp` |
+
+> 结论：本库的错误处理是**两套 API 一个源头** —— `std::error_code` 是主接口，
+> boost 兼容层只是历史包袱；不要在库内混合抛出异常来表达可恢复错误。
