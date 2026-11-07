@@ -189,6 +189,36 @@ jobs:
   # 关掉 detect_leaks：库里有些对象是刻意长命的（进程级 io 池等），
   # 让 LeakSanitizer 报它们只会训练大家忽略告警。
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Windows 共享库（DLL）：验证 NETMECH_API 的导出/导入面
+  #   多 .so/DLL 部署必须用 SHARED（静态库会把 netmech 复制进每个模块，
+  #   跨模块混用同一个 io_context 会崩，见 runtime.hpp 的说明）。
+  # ---------------------------------------------------------------------------
+  windows-shared:
+    name: Windows / MSVC / Shared
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+
+      - name: 配置 MSVC 环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 配置
+        shell: pwsh
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DNETMECH_LIBRARY_TYPE=SHARED
+
+      - name: 构建
+        shell: pwsh
+        run: cmake --build build --parallel
+
+      - name: 测试
+        shell: pwsh
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
   sanitizers:
     name: ASan + UBSan
     runs-on: ubuntu-latest
