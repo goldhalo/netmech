@@ -38,6 +38,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <system_error>
@@ -96,7 +99,7 @@ struct IdleInfo {
 ///          m_ep->read({nullptr, m_rx, sizeof m_rx});
 ///      }
 ///  @endcode
-class ConnHandler {
+class NETMECH_API ConnHandler {
 public:
     virtual ~ConnHandler() = default;
 

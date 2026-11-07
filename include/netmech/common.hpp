@@ -10,6 +10,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -52,7 +55,7 @@ public:
 /// @return true  本次调用决定了线程数（首次调用）。
 /// @return false 已初始化过且请求值不一致（同值视为幂等成功）。
 /// @note 线程安全。
-[[nodiscard]] bool initialize(std::size_t io_threads) noexcept;
+[[nodiscard]] NETMECH_API bool initialize(std::size_t io_threads) noexcept;
 
 /// 停止 io 运行时并回收所有 io 线程。幂等。
 ///
@@ -75,7 +78,7 @@ public:
 /// 的半死状态。
 ///
 /// @warning 会阻塞直到所有 io 线程退出。不要在 io 回调里调用。
-void shutdown() noexcept;
+NETMECH_API void shutdown() noexcept;
 
 // =============================================================================
 //  地址
@@ -91,7 +94,7 @@ struct AddressCodec;   ///< 内部实现：Address ⇄ asio 地址的转换（�
 ///  - 默认构造 = 0.0.0.0:0（通配：listen 让系统选端口，connect 让系统选源端口）。
 ///  - 支持 IPv4 / IPv6 字面量（`"1.2.3.4"`、`"::1"`，端口单列）。
 ///  - **不做域名解析**：面向设备直连，地址来自配置，基本都是 IP 字面量。
-class Address {
+class NETMECH_API Address {
 public:
     Address() noexcept;
 
@@ -214,7 +217,7 @@ enum class NetErrc {
 /// @return NetErrc 类别对象的常量引用；生命周期覆盖整个进程，永不失效。
 /// @note noexcept，可在全局析构期安全调用。
 /// @note 线程安全：可被任意线程并发调用。
-const std::error_category& net_category() noexcept;
+NETMECH_API const std::error_category& net_category() noexcept;
 
 /// 本模块在 boost 侧使用的错误码值基址。
 ///
@@ -228,7 +231,7 @@ inline constexpr int kNetErrcBase = 0x4E4D0000; // 'NM' 前缀，便于日志辨
 /// @return 内部 boost 类别对象的常量引用；与 `net_category()` 语义一一对应，
 ///         `message()` 文本相同。
 /// @note 线程安全、noexcept。主要用于 make_boost_error_code() 的实现。
-const std::error_category& net_boost_category() noexcept;
+NETMECH_API const std::error_category& net_boost_category() noexcept;
 
 /// 返回 NetErrc 的人类可读描述。
 ///

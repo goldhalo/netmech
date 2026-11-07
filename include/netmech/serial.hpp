@@ -27,6 +27,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -36,7 +39,7 @@
 
 namespace netmech {
 
-class SerialPort;
+class NETMECH_API SerialPort;
 
 // =============================================================================
 //  配置
@@ -87,7 +90,7 @@ struct SerialConfig {
 // =============================================================================
 
 /// 串口事件。全部在该串口所在的 io 线程上回调，**同一串口严格串行**。
-class SerialHandler {
+class NETMECH_API SerialHandler {
 public:
     virtual ~SerialHandler() = default;
 

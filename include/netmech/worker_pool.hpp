@@ -37,6 +37,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -49,7 +52,7 @@ namespace netmech {
 /// @par 线程模型
 ///  固定 N 条线程，从队列取任务执行。任务之间**不保证顺序**（多线程并发），
 ///  需要保序时用 `post_to(index, job)` 指定固定线程。
-class WorkerPool {
+class NETMECH_API WorkerPool {
 public:
     struct Config {
         /// 线程数。0 表示按 CPU 核数（`hardware_concurrency()`）。

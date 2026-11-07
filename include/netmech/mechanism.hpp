@@ -41,6 +41,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -100,7 +103,7 @@ inline constexpr std::uint32_t kDefaultBacklog = 128;
 ///   ...
 ///   mech->close_all();                                   // 断链，但仍可复用
 /// @endcode
-class Mechanism : public std::enable_shared_from_this<Mechanism>, private ::netmech::noncopyable {
+class NETMECH_API Mechanism : public std::enable_shared_from_this<Mechanism>, private ::netmech::noncopyable {
 public:
     /// 运行时配置。所有字段都有嵌入式友好的默认值。
     ///

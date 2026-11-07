@@ -46,6 +46,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -78,7 +81,7 @@ namespace netmech {
 /// @par 线程安全性
 ///  - 全部 public 方法线程安全（可从任意线程调用）。
 ///  - 全部回调在该 Conn 所在的 io 线程上串行执行（handle 之间不并发）。
-class Conn : public std::enable_shared_from_this<Conn>, private ::netmech::noncopyable {
+class NETMECH_API Conn : public std::enable_shared_from_this<Conn>, private ::netmech::noncopyable {
 public:
     /// Conn 必定通过 shared_ptr 释放，析构函数公开以便 shared_ptr 能调用。
     ///

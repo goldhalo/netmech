@@ -68,6 +68,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <cstddef>
 #include <memory>
 #include <system_error>
@@ -87,7 +90,7 @@ class IoPool;   ///< 内部类型（src/io_pool.hpp），公共 API 不会用到
 ///  `initialize()` / `shutdown()` 管理的是进程级默认运行时（`default_runtime()`）；
 ///  本类用于"多个池"或"多 .so 共用一套池"的场景。两者可以并存：
 ///  默认运行时管理自己那套线程，每个 Runtime 管自己那套。
-class Runtime {
+class NETMECH_API Runtime {
 public:
     /// 创建参数。
     struct Options {
@@ -143,7 +146,7 @@ public:
 private:
     explicit Runtime(Impl* impl) noexcept;
 
-    friend Runtime& default_runtime();   // 进程级默认运行时的唯一构造点
+    friend NETMECH_API Runtime& default_runtime();   // 进程级默认运行时的唯一构造点
 
     /// 故意**永不释放**：io_context 要与进程同寿（见文件头）。
     Impl* m_impl = nullptr;

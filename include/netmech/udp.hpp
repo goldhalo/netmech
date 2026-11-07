@@ -101,6 +101,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include "netmech/common.hpp"
 
 #include <cstddef>
@@ -193,8 +196,8 @@ struct UdpConfig {
 //  回调接口
 // =============================================================================
 
-class UdpEndpoint;
-class UdpHandler;
+class NETMECH_API UdpEndpoint;
+class NETMECH_API UdpHandler;
 struct UdpConfig;
 
 /// 在 [lo, hi] 区间里找一段**连续可用**的本地端口。
@@ -216,14 +219,14 @@ struct UdpConfig;
 /// @note 探测方式是逐个试 `bind`，会真实占用端口若干微秒后释放。
 /// @note **只探测 IPv4**（绑 `0.0.0.0`）。要给 IPv6 端点用同一个端口号，请自行
 ///       确认 IPv6 侧也可用 —— 两者在多数系统上端口空间独立，探测结果不通用。
-[[nodiscard]] std::optional<std::uint16_t>
+[[nodiscard]] NETMECH_API std::optional<std::uint16_t>
 find_free_port_run(std::uint16_t lo,
                    std::uint16_t hi,
                    std::uint16_t count     = 2,
                    std::uint16_t alignment = 2) noexcept;
 
 std::shared_ptr<UdpEndpoint>
-create_udp_endpoint(const UdpConfig&          cfg,
+NETMECH_API create_udp_endpoint(const UdpConfig&          cfg,
                     std::shared_ptr<UdpHandler> handler,
                     std::shared_ptr<void>     user_ctx,
                     std::error_code&          ec);
@@ -250,7 +253,7 @@ create_udp_endpoint(const UdpConfig&          cfg,
 ///       `create_udp_endpoint_on(rtp, ...)` 出来的 RTCP 端点，
 ///       与 RTP 端点、以及它们的定时回调，三者完全串行。
 [[nodiscard]] std::shared_ptr<UdpEndpoint>
-create_udp_endpoint_on(const UdpEndpoint&          anchor,
+NETMECH_API create_udp_endpoint_on(const UdpEndpoint&          anchor,
                        const UdpConfig&            cfg,
                        std::shared_ptr<UdpHandler> handler,
                        std::shared_ptr<void>       user_ctx,

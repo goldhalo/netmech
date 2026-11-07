@@ -23,6 +23,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -41,7 +44,7 @@ namespace netmech {
 ///         if (bind_pair(*first)) break;           // 真正绑上了才算数
 ///     }
 /// @endcode
-class PortAllocator {
+class NETMECH_API PortAllocator {
 public:
     /// @param[in] begin 区间起点（含）
     /// @param[in] end   区间终点（含）。begin > end 视为空区间（acquire 恒返回 nullopt）

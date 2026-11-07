@@ -33,6 +33,9 @@
 // =============================================================================
 #pragma once
 
+
+#include "netmech/export.hpp"
+
 #include <memory>
 
 // 本头**不引 asio**：回调参数都是 netmech::Conn，asio 类型不出现在接口上。
@@ -64,7 +67,7 @@ class ConnHandler;   ///< 协议处理器（完整定义见 netmech/iohandler.hp
 ///        on_open()，随后由 handler 驱动读写；
 ///      * 保持为空                        -> **拒绝该连接**，库会立即关闭
 ///        （服务端）/ 视为连接失败（客户端），不再投递后续事件。
-class Linkable {
+class NETMECH_API Linkable {
 public:
     /// 虚析构函数。允许通过 std::shared_ptr<Linkable> 正确析构派生类。
     virtual ~Linkable() = default;

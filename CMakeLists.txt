@@ -197,6 +197,17 @@ else()
     set(NETMECH_IS_INTERFACE ON)
 endif()
 
+# 共享库：导出/导入宏（见 include/netmech/export.hpp）
+if(NETMECH_LIBRARY_TYPE STREQUAL "SHARED")
+    target_compile_definitions(netmech PUBLIC NETMECH_SHARED)
+    target_compile_definitions(netmech PRIVATE NETMECH_BUILDING_LIBRARY)
+    if(MSVC)
+        # 导出类里的 std:: 成员会触发 C4251；这是 DLL 边界的正常噪音
+        # （std 容器/智能指针的 ABI 由工具链保证），按常规做法抑制。
+        target_compile_options(netmech PRIVATE /wd4251)
+    endif()
+endif()
+
 set_target_properties(netmech PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
