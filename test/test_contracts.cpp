@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <system_error>
 
 #include "test_framework.hpp"
@@ -63,13 +64,24 @@ struct RejectOnOpen final : ConnHandler {
 };
 
 struct RejectLink final : Linkable {
-    std::shared_ptr<RejectOnOpen> handler;
-
     std::shared_ptr<ConnHandler> on_accept(Conn&) override
     {
-        handler = std::make_shared<RejectOnOpen>();
+        auto h = std::make_shared<RejectOnOpen>();
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            handler = h;
+        }
+        return h;
+    }
+
+    std::shared_ptr<RejectOnOpen> get()
+    {
+        std::lock_guard<std::mutex> lk(mtx);
         return handler;
     }
+
+    std::mutex                    mtx;
+    std::shared_ptr<RejectOnOpen> handler;
 };
 
 /// 客户端：连上后什么都不做（保持连接直到服务端关闭）。
@@ -119,16 +131,18 @@ NETMECH_TEST(contract_reject_on_open_still_completes_accepted_io)
 
     // 等服务端 on_open 跑完、库把两笔以错误归还
     REQUIRE(wait_for([&] {
-        return lb->handler != nullptr && lb->handler->reads.load() == 1
-               && lb->handler->writes.load() == 1;
+        auto h = lb->get();
+        return h != nullptr && h->reads.load() == 1 && h->writes.load() == 1;
     }, 3000ms));
 
-    CHECK_EQ(lb->handler->reads.load(), 1);    // 已受理的读：恰好一次（带错误）
-    CHECK_EQ(lb->handler->writes.load(), 1);   // 已受理的写：恰好一次（带错误）
+    auto reject = lb->get();
+    REQUIRE(reject != nullptr);
+    CHECK_EQ(reject->reads.load(), 1);    // 已受理的读：恰好一次（带错误）
+    CHECK_EQ(reject->writes.load(), 1);   // 已受理的写：恰好一次（带错误）
 
     // on_open 返回 false ⇒ 不配平 on_close（文档承诺）
     std::this_thread::sleep_for(150ms);
-    CHECK_EQ(lb->handler->closes.load(), 0);
+    CHECK_EQ(reject->closes.load(), 0);
 
     cli->close_all();
     srv->close_all();
@@ -167,13 +181,24 @@ struct InflightHandler final : ConnHandler {
 };
 
 struct InflightLink final : Linkable {
-    std::shared_ptr<InflightHandler> h;
-
     std::shared_ptr<ConnHandler> on_accept(Conn&) override
     {
-        h = std::make_shared<InflightHandler>();
+        auto handler = std::make_shared<InflightHandler>();
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            h = handler;
+        }
+        return handler;
+    }
+
+    std::shared_ptr<InflightHandler> get()
+    {
+        std::lock_guard<std::mutex> lk(mtx);
         return h;
     }
+
+    std::mutex                       mtx;
+    std::shared_ptr<InflightHandler> h;
 };
 
 /// 客户端：连上就主动关闭（制造"服务端在途读被打断"）。
@@ -214,15 +239,18 @@ NETMECH_TEST(contract_close_returns_inflight_read_and_notifies_once)
     REQUIRE(!cli->connect(Address{"127.0.0.1", bound->port()}, cli_lb));
 
     REQUIRE(wait_for([&] {
-        return lb->h != nullptr && lb->h->errors.load() >= 1 && lb->h->closes.load() >= 1;
+        auto h = lb->get();
+        return h != nullptr && h->errors.load() >= 1 && h->closes.load() >= 1;
     }, 3000ms));
 
-    CHECK_EQ(lb->h->errors.load(), 1);   // 在途读：恰好一次（带错误）
-    CHECK_EQ(lb->h->closes.load(), 1);   // on_close：恰好一次
+    auto inflight = lb->get();
+    REQUIRE(inflight != nullptr);
+    CHECK_EQ(inflight->errors.load(), 1);   // 在途读：恰好一次（带错误）
+    CHECK_EQ(inflight->closes.load(), 1);   // on_close：恰好一次
 
     std::this_thread::sleep_for(150ms);
-    CHECK_EQ(lb->h->errors.load(), 1);   // 不重复通知
-    CHECK_EQ(lb->h->closes.load(), 1);
+    CHECK_EQ(inflight->errors.load(), 1);   // 不重复通知
+    CHECK_EQ(inflight->closes.load(), 1);
 
     cli->close_all();
     srv->close_all();
