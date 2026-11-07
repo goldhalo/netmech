@@ -421,6 +421,18 @@ jobs:
           fi
           echo "✅ 对外头文件无 asio 依赖"
 
+      - name: 检查测试不得用大 sleep 做同步
+        run: |
+          # 正事件等待必须用 wait_for / wait_until；sleep 只允许负断言观察窗（<=150ms）。
+          hits=$(grep -rnE 'sleep_for\(([2-9][0-9]{2}|[0-9]{4,})ms\)' test/ \
+                   --include='*.cpp' --include='*.hpp' || true)
+          if [ -n "$hits" ]; then
+            echo "❌ 发现 >=200ms 的 sleep_for（请改用条件等待）"
+            echo "$hits"
+            exit 1
+          fi
+          echo "✅ 无大 sleep 同步等待"
+
       - name: 检查每个对外头文件可单独包含
         run: |
           sudo apt-get update && sudo apt-get install -y g++
