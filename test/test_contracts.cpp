@@ -133,3 +133,97 @@ NETMECH_TEST(contract_reject_on_open_still_completes_accepted_io)
     cli->close_all();
     srv->close_all();
 }
+
+// ---------------------------------------------------------------------------
+// 对端关闭：在途读以错误归还一次，on_close 恰好一次（不重复通知）
+// ---------------------------------------------------------------------------
+namespace {
+
+struct InflightHandler final : ConnHandler {
+    std::shared_ptr<Conn>        ep;
+    std::array<std::uint8_t, 64> rx{};
+    std::atomic<int>             reads{0};
+    std::atomic<int>             errors{0};
+    std::atomic<int>             closes{0};
+
+    bool on_open(std::shared_ptr<Conn> c) override
+    {
+        ep = c;
+        return c->read(Buf{nullptr, rx.data(), rx.size()});
+    }
+    void on_read(std::error_code ec, Buf, std::size_t) override
+    {
+        reads.fetch_add(1);
+        if (ec) {
+            errors.fetch_add(1);
+        }
+    }
+    void on_write(std::error_code, ConstBuf, std::size_t) override {}
+    void on_close() override
+    {
+        closes.fetch_add(1);
+        ep.reset();
+    }
+};
+
+struct InflightLink final : Linkable {
+    std::shared_ptr<InflightHandler> h;
+
+    std::shared_ptr<ConnHandler> on_accept(Conn&) override
+    {
+        h = std::make_shared<InflightHandler>();
+        return h;
+    }
+};
+
+/// 客户端：连上就主动关闭（制造"服务端在途读被打断"）。
+struct CloseOnOpen final : ConnHandler {
+    bool on_open(std::shared_ptr<Conn> c) override
+    {
+        c->close();
+        return true;
+    }
+    void on_read(std::error_code, Buf, std::size_t) override {}
+    void on_write(std::error_code, ConstBuf, std::size_t) override {}
+    void on_close() override {}
+};
+
+struct CloseOnOpenLink final : Linkable {
+    std::shared_ptr<ConnHandler> on_linkup(Conn&) override
+    {
+        return std::make_shared<CloseOnOpen>();
+    }
+    void on_linkfail(const Address&, std::error_code) override {}
+};
+
+} // namespace
+
+NETMECH_TEST(contract_close_returns_inflight_read_and_notifies_once)
+{
+    auto srv = Mechanism::create();
+    REQUIRE(srv != nullptr);
+    auto lb = std::make_shared<InflightLink>();
+    const Address req{"127.0.0.1", 0};
+    REQUIRE(!srv->listen(req, lb, 8));
+    const auto bound = srv->listening_address(req);
+    REQUIRE(bound.has_value());
+
+    auto cli = Mechanism::create();
+    REQUIRE(cli != nullptr);
+    auto cli_lb = std::make_shared<CloseOnOpenLink>();
+    REQUIRE(!cli->connect(Address{"127.0.0.1", bound->port()}, cli_lb));
+
+    REQUIRE(wait_for([&] {
+        return lb->h != nullptr && lb->h->errors.load() >= 1 && lb->h->closes.load() >= 1;
+    }, 3000ms));
+
+    CHECK_EQ(lb->h->errors.load(), 1);   // 在途读：恰好一次（带错误）
+    CHECK_EQ(lb->h->closes.load(), 1);   // on_close：恰好一次
+
+    std::this_thread::sleep_for(150ms);
+    CHECK_EQ(lb->h->errors.load(), 1);   // 不重复通知
+    CHECK_EQ(lb->h->closes.load(), 1);
+
+    cli->close_all();
+    srv->close_all();
+}
