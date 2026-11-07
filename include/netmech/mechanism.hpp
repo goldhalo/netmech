@@ -64,6 +64,9 @@
 
 namespace netmech {
 
+class Runtime;   ///< 可注入的 io 运行时（netmech/runtime.hpp）
+
+
 /// listen() 的默认 backlog：**固定 128**，与旧 AsioMechanism 的默认值一致。
 ///
 /// 为什么不取平台 SOMAXCONN：
@@ -157,6 +160,28 @@ public:
     ///       不可用，GCC 会直接报错（MSVC 放过了，属于实现宽容度差异）。
     ///       拆成两个重载在两种编译器上都合法。
     static std::shared_ptr<Mechanism> create(Config cfg);
+
+    /// 用**指定的运行时**创建实例（可注入；线程数由该 Runtime 决定）。
+    ///
+    /// @param[in] cfg     配置（见上）
+    /// @param[in] runtime io 运行时；传 nullptr 等价于 `create(cfg)`（用默认运行时）
+    /// @return 非空；失败语义同 `create(Config)`。
+    ///
+    /// @par 什么时候需要它
+    ///  - 一个进程里要多套互不干扰的 io 线程池（媒体面/信令面隔离、测试）；
+    ///  - 一个进程里要多套互不干扰的 io 线程池（媒体面/信令面隔离、测试）。
+    ///
+    /// @par 多 .so 进程（重要）
+    ///  如果各 .so **各自静态链接** netmech，`IoPool::global()` 是每个模块
+    ///  各一份的静态数据 —— 而且**不能**靠"把一个模块的 Runtime 注入给另一个
+    ///  模块"来共用：asio 的线程局部状态/注册表同样每模块一份，混用同一个
+    ///  io_context 会崩（实测 SIGSEGV in asio scheduler）。
+    ///  正确做法是 netmech 构建成**共享库**（`-DNETMECH_LIBRARY_TYPE=SHARED`），
+    ///  全进程一份代码，`default_runtime()` 天然只有一份。
+    ///
+    /// @note 本实例会持有该运行时直到析构，因此宿主即使先释放自己的
+    ///       shared_ptr，Mechanism 仍然安全（线程池不会消失）。
+    static std::shared_ptr<Mechanism> create(Config cfg, std::shared_ptr<Runtime> runtime);
 
     /// 析构：等价于 close_all() 后再 join 全部 io 线程。
     ///

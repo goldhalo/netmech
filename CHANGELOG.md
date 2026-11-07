@@ -11,6 +11,30 @@
 
 ### 新增
 
+**可注入的 io 运行时 `Runtime`（多套线程池 / 多 .so 部署）**
+
+- `include/netmech/runtime.hpp`：`Runtime::create(Options{io_threads})` 由**调用方**
+  决定线程数；`shutdown()` 幂等（停线程 + join，io_context 与进程同寿，语义与
+  默认运行时一致）。
+- `Mechanism::create(cfg, std::shared_ptr<Runtime>)`：注入入口。单 exe / 单 .so
+  仍用 `Mechanism::create(cfg)`（默认运行时），旧代码零改动。
+- `netmech::initialize()/shutdown()` 管理的是进程级默认运行时（`default_runtime()`），
+  行为不变。
+- `test/test_runtime.cpp`：5 个用例（线程数由创建者决定、关闭语义、注入后跨池
+  echo、两个 Runtime 互不影响、Mechanism 持有 Runtime 强引用）。
+
+**构建：`NETMECH_LIBRARY_TYPE=STATIC|SHARED`（默认 STATIC）**
+
+- 多 .so 进程必须用 SHARED：**实测结论**——各 .so 各自静态链接 netmech 时，
+  代码与静态数据（io 池、asio 的线程局部状态、注册表）都是每模块一份，
+  把一个模块的 Runtime 注入到另一个静态链接的模块后，混用同一个 io_context
+  会崩（SIGSEGV in `asio::detail::scheduler::compensating_work_started`）。
+  SHARED 构建全进程一份代码，`default_runtime()` 天然只有一份。
+- `test/multi_so/`：只在 SHARED 构建下注册的回归用例 —— 宿主建一个 `Runtime(4)`，
+  两个静态…（共享）链接 netmech 的 .so 分别建 Mechanism，断言进程只多 4 条
+  io 线程、两个 .so 看到同一个 Runtime。CI 新增 `Linux / gcc / Shared` job。
+
+
 **CMake 安装与导出（find_package）**
 
 - `cmake --install` 现在装出完整的一套：头文件、静态库、

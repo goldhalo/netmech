@@ -242,6 +242,8 @@ public:
     /// @note join 之后运行时**不可复活**（不支持重新 initialize）。
     void join_threads() noexcept;
 
+    friend class Runtime;   // Runtime::create() 需要构造 IoPool 并 start()
+
 protected:
     /// 由 create() 调用。
     explicit IoPool(std::size_t threads);

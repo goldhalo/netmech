@@ -77,6 +77,42 @@ jobs:
   # 接连失效（找不到 VS、或 MSBuild 起不来）。msvc-dev-cmd 摆好 cl 的环境
   # 再走 Ninja 更稳。
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # 共享库构建（多 .so 部署的主推形态）
+  #
+  # 背景：一个进程里多个 .so 各自静态链接 netmech 时，代码与静态数据（ion 池、
+  # asio 的线程局部状态、注册表）都是每模块一份 —— 跨模块混用同一个 io_context
+  # 会在 asio 内部崩溃（实测 SIGSEGV in asio scheduler）。SHARED 构建让全进程
+  # 只有一份代码，问题消失。
+  #
+  # test/multi_so 只在本构建下注册：两个 .so 共用宿主注入的 Runtime，断言
+  # "只多出宿主那 4 条 io 线程"。
+  # ---------------------------------------------------------------------------
+  shared:
+    name: Linux / gcc / Shared
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: 配置
+        run: |
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DNETMECH_LIBRARY_TYPE=SHARED \
+                -DNETMECH_WARNINGS_AS_ERRORS=ON
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
   windows:
     name: Windows / MSVC / ${{ matrix.build_type }}
     runs-on: windows-latest

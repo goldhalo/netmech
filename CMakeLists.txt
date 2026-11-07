@@ -72,6 +72,18 @@ option(NETMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用，默认 OF
 # 纯静态场景（板端）可 -DNETMECH_PIC=OFF 关掉。
 option(NETMECH_PIC "编译为位置无关代码（静态库要链进 .so 时必须开）" ON)
 
+# 静态库（默认）还是共享库。
+#
+# 什么时候需要 SHARED：**一个进程里有多个 .so 各自链接 netmech**（例如
+# 宿主同时加载 modbusmech 和 httpmech 两个 SO）。静态库会把 netmech 的代码与
+# 静态数据（IoPool、asio 的线程局部状态、注册表…）复制进每个 SO —— 每个 SO
+# 各有一套 io 线程池，且**跨模块混用同一个 io_context 会崩**（asio 的 per-thread
+# 状态也是每模块一份）。改成 SHARED 后整个进程只有一份代码，问题消失。
+#
+# ⚠ Windows 共享库需要导出宏（NETMECH_API）；当前 Windows 只支持 STATIC。
+set(NETMECH_LIBRARY_TYPE "STATIC" CACHE STRING "netmech 库类型：STATIC 或 SHARED")
+set_property(CACHE NETMECH_LIBRARY_TYPE PROPERTY STRINGS STATIC SHARED)
+
 # ---------------------------------------------------------------------------
 # 2. 第三方依赖：独立 Asio（header-only，随仓库提供）
 # ---------------------------------------------------------------------------
@@ -176,7 +188,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src")
 endif()
 
 if(NETMECH_SOURCES)
-    add_library(netmech STATIC ${NETMECH_SOURCES} ${NETMECH_PUBLIC_HEADERS})
+    add_library(netmech ${NETMECH_LIBRARY_TYPE} ${NETMECH_SOURCES} ${NETMECH_PUBLIC_HEADERS})
     set(NETMECH_IS_INTERFACE OFF)
 else()
     message(STATUS "netmech: src/ 下暂无 .cpp，构建为 INTERFACE（header-only）库")
@@ -235,6 +247,32 @@ if(NETMECH_BUILD_TESTS)
             set_tests_properties(netmech_ut PROPERTIES
                 TIMEOUT 300
                 WORKING_DIRECTORY "${NETMECH_OUTPUT_DIR}")
+
+            # -----------------------------------------------------------------
+            # 多 .so 回归：两个 .so 各自静态链接 netmech（默认运行时 = 各一份
+            # 线程池），宿主创建**一个** Runtime 注入进去，验证它们共用同一套
+            # io 线程（线程数只 +N，而不是 +2N）。这是 Runtime 存在的理由。
+            #
+            # 仅 Unix：Windows DLL 需要显式导出宏，本用例暂不覆盖。
+            # -----------------------------------------------------------------
+            if(UNIX AND NETMECH_LIBRARY_TYPE STREQUAL "SHARED")
+                add_library(netmech_multi_so_a SHARED test/multi_so/consumer.cpp)
+                add_library(netmech_multi_so_b SHARED test/multi_so/consumer.cpp)
+                foreach(lib netmech_multi_so_a netmech_multi_so_b)
+                    target_link_libraries(${lib} PRIVATE netmech)
+                    set_target_properties(${lib} PROPERTIES FOLDER "netmech/test")
+                endforeach()
+
+                add_executable(netmech_multi_so_main test/multi_so/main.cpp)
+                target_link_libraries(netmech_multi_so_main PRIVATE netmech ${CMAKE_DL_LIBS})
+                target_compile_definitions(netmech_multi_so_main PRIVATE
+                    CONSUMER_DIR="${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
+                add_dependencies(netmech_multi_so_main netmech_multi_so_a netmech_multi_so_b)
+                set_target_properties(netmech_multi_so_main PROPERTIES FOLDER "netmech/test")
+
+                add_test(NAME netmech_multi_so COMMAND netmech_multi_so_main)
+                set_tests_properties(netmech_multi_so PROPERTIES TIMEOUT 60)
+            endif()
         endif()
     endif()
 endif()

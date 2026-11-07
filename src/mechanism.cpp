@@ -50,6 +50,9 @@
 #include "netmech/conn.hpp"
 #include "netmech/common.hpp"
 #include "io_pool.hpp"
+#include "runtime_internal.hpp"
+
+#include "netmech/runtime.hpp"
 #include "netmech/iohandler.hpp"
 #include "netmech/linkable.hpp"
 #include "netmech/mechanism.hpp"
@@ -98,6 +101,9 @@ struct Mechanism::Impl {
 
     Config                                            cfg;
     IoPool*                                           pool = nullptr;
+    /// 注入的运行时（默认运行时用非拥有句柄）。持有 shared_ptr 保证
+    /// 调用方销毁 Runtime 时，用它建出来的 Mechanism 仍然安全。
+    std::shared_ptr<Runtime>                          runtime;
 
     /// 连接表：key = Conn id。强引用，摘除后由最后一个持有者释放。
     mutable std::mutex                                endpoints_mutex;
@@ -392,6 +398,12 @@ std::shared_ptr<Mechanism> Mechanism::create()
 
 std::shared_ptr<Mechanism> Mechanism::create(Config cfg)
 {
+    // 兼容入口：用进程级默认运行时（initialize()/shutdown() 管理的那一个）。
+    return create(std::move(cfg), detail::default_runtime_handle());
+}
+
+std::shared_ptr<Mechanism> Mechanism::create(Config cfg, std::shared_ptr<Runtime> runtime)
+{
     // 首次创建时安装 Conn 构造入口（std::call_once 保证线程安全、幂等）。
     //
     // 为什么必须在"Mechanism 的成员函数"里安装：`Conn` 的构造函数是
@@ -418,9 +430,16 @@ std::shared_ptr<Mechanism> Mechanism::create(Config cfg)
     //     永远能访问到有效的 io_context；
     //   * 库内对象的在途完成处理可以安全地捕获自己的 shared_ptr（强自持），
     //     关闭流程必定执行，通知不会丢。
-    IoPool& pool = IoPool::global();
+    // 运行时由调用方注入（显式 Runtime 或默认运行时）。
+    // 多 .so 进程里由宿主创建**一个** Runtime 传进来，各库共用同一套 io 线程。
+    if (!runtime) {
+        runtime = detail::default_runtime_handle();
+    }
+    IoPool& pool = detail::runtime_pool(*runtime);
+
     std::shared_ptr<Mechanism::Impl> impl = std::make_shared<Mechanism::Impl>(cfg);
     impl->pool = &pool;
+    impl->runtime = std::move(runtime);
     // 回填弱引用：Conn 的摘除钩子需要它（不能强引用，否则 Impl 与
     // Conn 互相持有形成环）。
     impl->weak_self_ = impl;
