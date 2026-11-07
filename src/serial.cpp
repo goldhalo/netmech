@@ -52,8 +52,8 @@ public:
          SerialConfig conf, std::shared_ptr<SerialHandler> h)
         : io(io_ctx)
         , port(io_ctx)
-        , pool(&pool_ref)
         , runtime(std::move(rt))
+        , pool(&pool_ref)
         , cfg(std::move(conf))
         , handler(std::move(h))
     {
