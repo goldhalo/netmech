@@ -233,3 +233,29 @@ auto srv = httpmech::HttpServer::create_with_mechanism(mech, cfg, router);
 - **不做 pimpl 化整个 API**（方案 F）。这些库的使用者就是自己的应用，ABI 稳定没有收益，pimpl 只会让调试更难。
 - **不做插件式后端**（"把 netmech 换成别的传输"）。没有第二个传输实现的需求，抽象出来是纯负担。
 - **不做 TLS**。这跟发布形态无关，别混在一起谈。
+
+## 多库共享 netmech（modbusmech / httpmech / rtspmech / rtpmech 同进程）
+
+大业务系统常在一个进程里同时用多个协议库，它们都依赖 netmech。推荐部署形态：
+
+- **netmech 用共享库**（`-DNETMECH_LIBRARY_TYPE=SHARED`），下游库也都用共享库
+  （`-DBUILD_SHARED_LIBS=ON`）并**链接**共享 netmech（不要静态链）；
+- 进程内只有一份 `libnetmech.so` → 一份 io 池；下游库对 netmech 的调用是
+  未定义符号，运行时解析到同一份实现（`nm -D libmodbusmech.so | grep netmech` 可见 `U`）；
+- **线程数由应用决定**：在 `main` 最早期调用一次 `netmech::initialize(N)`
+  （必须早于任何库创建对象，否则池会先以默认线程数建立，之后再 initialize 返回 false）。
+
+```cpp
+int main() {
+    (void)netmech::initialize(4);   // 全进程 4 条 io 线程，所有协议库共用
+    // ... 创建 modbusmech / httpmech / rtspmech / rtpmech 对象 ...
+    // 退出前：先 close 各库对象，再 netmech::shutdown()
+}
+```
+
+**若需要多套互相隔离的池**（控制面/媒体面分开）：应用创建
+`Runtime::create(Options{io_threads = M})`，通过各库的 create 接口注入
+（netmech 的 Mechanism/SerialPort/UDP 已支持；下游库的 Runtime 透传待补）。
+
+**注意**：所有库必须链接**同一份** netmech（同版本）；下游库建议开 hidden 可见性，
+只导出自己的 API，避免把 netmech 符号二次导出。
