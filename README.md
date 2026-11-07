@@ -99,6 +99,42 @@ auto ep = create_udp_endpoint(cfg, std::make_shared<Echo>(), nullptr, ec);
 
 ---
 
+## 同进程多库部署（必读）
+
+一个进程里如果**不止一个模块**使用 netmech（直接使用，或通过 modbusmech /
+httpmech / rtspmech / rtpmech 间接使用），部署形态直接决定 io 线程池有几套：
+
+| 场景 | 要求 |
+|---|---|
+| 单 exe、只有一处使用 netmech | 静态库/动态库都可以 |
+| 同进程**多个模块**使用 netmech（含下游协议库） | **必须用共享库**：netmech `-DNETMECH_LIBRARY_TYPE=SHARED`，下游库 `-DBUILD_SHARED_LIBS=ON` 且**链接**共享 netmech（不要静态链） |
+| 全应用共用**一套** io 池，线程数由应用决定 | 共享库 + `netmech::initialize(N)`（进程级默认池；必须在任何库创建对象**之前**调用） |
+| 想要**多套**互不干扰的池（控制面/媒体面隔离） | 应用 `netmech::Runtime::create(Options{io_threads = M})` 建池，通过各库的 `create_*` 注入；netmech 的 `Mechanism`/`SerialPort`/UDP 工厂已支持，modbusmech 已支持，其余下游库陆续 |
+
+**为什么不能静态链接进多个 .so**：静态库会把 netmech 的代码和静态数据（io 池、
+asio 的线程局部状态…）复制进每个模块 —— 每个模块一套线程池，而且把一个模块的
+`Runtime` 注入另一个静态副本会在 asio 内部崩溃（实测 SIGSEGV）。共享库才能做到
+"一份代码、一份池"。
+
+```cpp
+int main() {
+    // ① 共用一套池：线程数由应用定（必须早于任何库创建对象）
+    (void)netmech::initialize(4);
+
+    // ② 或多套池：应用各自创建并注入
+    // netmech::Runtime::Options o; o.io_threads = 2;
+    // auto rt = netmech::Runtime::create(o);
+    // auto mech = netmech::Mechanism::create(netmech::Mechanism::Config{}, rt);
+
+    // ... 使用各协议库（它们内部用同一个默认池 / 注入的池）...
+
+    // 退出：先 close 各库对象，再停运行时
+    // netmech::shutdown();
+}
+```
+
+详细说明与验证数据见 [`docs/packaging.md`](docs/packaging.md) 的「多库共享 netmech」一节。
+
 ## 三个必须知道的约束
 
 ### ① 必须保持一笔读在途
