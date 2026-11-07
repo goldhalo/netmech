@@ -7,6 +7,9 @@
 #include <netmech/serial.hpp>
 
 #include "io_pool.hpp"
+#include "runtime_internal.hpp"
+
+#include "netmech/runtime.hpp"
 #include "netmech_srcpch.hpp"
 
 #include <asio/serial_port.hpp>
@@ -45,10 +48,12 @@ namespace netmech {
 class SerialPort::Impl : public std::enable_shared_from_this<SerialPort::Impl> {
 public:
     Impl(asio::io_context& io_ctx, IoPool& pool_ref,
+         std::shared_ptr<Runtime> rt,
          SerialConfig conf, std::shared_ptr<SerialHandler> h)
         : io(io_ctx)
         , port(io_ctx)
         , pool(&pool_ref)
+        , runtime(std::move(rt))
         , cfg(std::move(conf))
         , handler(std::move(h))
     {
@@ -426,6 +431,14 @@ std::shared_ptr<SerialPort> SerialPort::create(const SerialConfig&      cfg,
                                                std::shared_ptr<SerialHandler> handler,
                                                std::error_code&         ec)
 {
+    return create(cfg, std::move(handler), nullptr, ec);
+}
+
+std::shared_ptr<SerialPort> SerialPort::create(const SerialConfig& cfg,
+                                               std::shared_ptr<SerialHandler> handler,
+                                               std::shared_ptr<Runtime> runtime,
+                                               std::error_code& ec)
+{
     ec.clear();
     if (!handler) {
         ec = make_boost_error_code(NetErrc::invalid_argument);
@@ -437,8 +450,12 @@ std::shared_ptr<SerialPort> SerialPort::create(const SerialConfig&      cfg,
     }
 
     auto sp = std::shared_ptr<SerialPort>(new SerialPort());
-    auto impl = std::make_shared<Impl>(IoPool::global().next_io_context(),
-                                       IoPool::global(), cfg, std::move(handler));
+    if (!runtime) {
+        runtime = detail::default_runtime_handle();
+    }
+    IoPool& pool = detail::runtime_pool(*runtime);
+    auto impl = std::make_shared<Impl>(pool.next_io_context(), pool,
+                                       std::move(runtime), cfg, std::move(handler));
     if (!impl->open(ec)) {
         return nullptr;
     }

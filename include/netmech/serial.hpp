@@ -39,6 +39,8 @@
 
 namespace netmech {
 
+class Runtime;   ///< 可注入的 io 运行时（netmech/runtime.hpp）
+
 class NETMECH_API SerialPort;
 
 // =============================================================================
@@ -141,6 +143,18 @@ public:
     [[nodiscard]] static std::shared_ptr<SerialPort>
     create(const SerialConfig&         cfg,
            std::shared_ptr<SerialHandler> handler,
+           std::error_code&            ec);
+
+    /// 用**指定的运行时**创建串口（可注入；线程数由该 Runtime 决定）。
+    ///
+    /// @param[in] runtime 传 nullptr 等价于旧重载（进程级默认运行时）。
+    /// @note 本对象会持有该运行时直到析构，宿主先释放自己的 shared_ptr 也安全。
+    /// @note 多 .so 进程必须让 netmech 以共享库形式被所有模块共用（见 runtime.hpp）；
+    ///       静态副本之间注入 Runtime 会在 asio 内部崩溃。
+    [[nodiscard]] static std::shared_ptr<SerialPort>
+    create(const SerialConfig&         cfg,
+           std::shared_ptr<SerialHandler> handler,
+           std::shared_ptr<Runtime>    runtime,
            std::error_code&            ec);
 
     ~SerialPort();
