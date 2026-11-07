@@ -59,6 +59,9 @@ public:
     {
     }
 
+    /// 注入运行时（保持池存活；默认运行时是非持有句柄）
+    std::shared_ptr<Runtime> runtime;
+
     bool open(std::error_code& out_ec)
     {
         error_code_t ec;
