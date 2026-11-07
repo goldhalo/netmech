@@ -10,7 +10,7 @@
 | `01_tcp_connection.puml/.png/.svg` | TCP 子系统：Mechanism/Endpoint 门面 + Acceptor/ConnectOp + 读写队列 + 双向保活 | 1611×1714 |
 | `02_datagram.puml/.png/.svg` | UDP 子系统：无连接 `UdpChannel` 与会话化 `DatagramReceiver`/`DatagramSession` 两套 API | 2057×1392 |
 | `03_support.puml/.png/.svg` | 基础设施：线程池、endpoint id 分配、error_category、编译期协议探测 | 1437×945 |
-| `raw/netmech_all_raw.puml` | hpp2plantuml 原样输出，**未做任何修正**，仅用于比对工具行为 | — |
+| `archive/raw/netmech_all_raw.puml` | hpp2plantuml 原样输出，**未做任何修正**，仅用于比对工具行为 | — |
 
 为什么不出一张全量图：34 个类 + 34 条关系的单图实测宽 9327px，PlantUML 布局会把类横向铺开成一条"带子"，无法阅读；kroki 的 PNG 还会在 4096px 处裁切。按子系统切分后每张都在 2200px 内。
 
@@ -20,7 +20,7 @@
 # 1. 解析源码，得到工具原始输出（自动处理 BOM）
 python tools/uml/export_class_diagram.py \
     --src include/netmech --src src --deps \
-    -o docs/design/raw/netmech_all_raw.puml
+    -o docs/design/archive/raw/netmech_all_raw.puml
 
 # 2. 校正后渲染（本地无 java 时走 kroki）
 curl -s -X POST -H "Content-Type: text/plain" \
@@ -95,3 +95,12 @@ curl -s -X POST -H "Content-Type: text/plain" \
 - **两套 UDP API 并存**：`IDatagramChannel`（无会话）与 `IDatagramReceiver`+`IDatagramSession`（有会话）职责重叠度高，各自带一套 `*Config`、`*SendQueue`、`*KeepAlive`。这是当前类数偏多的主因，概要设计时应明确二者取舍。
 - **契约与实现 1:1，但创建入口分散且风格不一**：`make_datagram_channel`（udp_channel.cpp，`error_code&` 出参）、`make_datagram_receiver`（datagram_receiver.cpp，`error_code&` 出参）、`MakeEndpointObject` + `install_endpoint_factory`（endpoint.cpp，全局函数指针注入，还要由 mechanism.cpp 回填注册）、以及 `DatagramReceiver` 内部再直接 `make_shared`。四种创建方式并存，详细设计阶段应统一 factory 约定。
 - **无显式的连接/会话状态枚举**：`Endpoint::Impl` 用 4 个独立 `atomic<bool>`（`closing` / `closed` / `unregistered` / `has_pending_read`）表达连接生命周期，`RecvKeepAlive`/`SendKeepAlive` 再各自带一个 `progressed`。这属于详细设计要补的"状态机规格"——当前代码评审时最难验证的就是这几个标志的合法组合。
+
+## 过程产物（已归档）
+
+以下内容是设计过程中的**中间产物**，保留备查，不参与构建/安装：
+
+- `archive/proposed/netmech/{common,tcp,udp}.hpp` —— v1.0 契约头文件（历史基线，供 overview-design.md 引用）
+- `archive/raw/netmech_all_raw.puml` —— hpp2plantuml 原样输出（未修正，仅用于比对工具行为）
+
+正式设计产物只有：`*.puml` / `*.png` / `*.svg`、`README.md`、`overview-design.md`。

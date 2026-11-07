@@ -1,6 +1,6 @@
 # netmech 概要设计（v1.0）
 
-对应对外契约：`docs/design/proposed/netmech/{common,tcp,udp}.hpp`（v1.0 定稿）。
+对应对外契约：`docs/design/archive/proposed/netmech/{common,tcp,udp}.hpp`（v1.0 定稿）。
 本文只讲**内部怎么实现**。契约是条件，实现层任何调整都不得破坏头文件里的承诺。
 
 约束：C++17、standalone asio（仓库自带 `thirdparty/asio`）、MSVC + Linux、不引入新依赖。
@@ -305,7 +305,7 @@ write(buf)
 
 ## 8.2 实施期的设计偏离：取消 `ConnectFuture`
 
-原设计（`docs/design/proposed/netmech/tcp.hpp` v1.0）提供了 `ConnectFuture`
+原设计（`docs/design/archive/proposed/netmech/tcp.hpp` v1.0）提供了 `ConnectFuture`
 作为 connect 的同步等待句柄，参数带 `HandlerFactory`。
 
 **实现阶段取消，理由：**

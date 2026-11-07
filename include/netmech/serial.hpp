@@ -41,7 +41,7 @@ namespace netmech {
 
 class Runtime;   ///< 可注入的 io 运行时（netmech/runtime.hpp）
 
-class NETMECH_API SerialPort;
+class SerialPort;
 
 // =============================================================================
 //  配置
@@ -129,7 +129,7 @@ public:
 //  串口
 // =============================================================================
 
-class SerialPort {
+class NETMECH_API SerialPort {
 public:
     /// 打开串口。
     ///

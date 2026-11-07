@@ -198,8 +198,8 @@ struct UdpConfig {
 //  回调接口
 // =============================================================================
 
-class NETMECH_API UdpEndpoint;
-class NETMECH_API UdpHandler;
+class UdpEndpoint;
+class UdpHandler;
 struct UdpConfig;
 
 /// 在 [lo, hi] 区间里找一段**连续可用**的本地端口。
@@ -285,7 +285,7 @@ NETMECH_API create_udp_endpoint_on(const UdpEndpoint&          anchor,
 ///  - 不同端点可能在不同 io 线程上并发回调（跨端点共享状态请自行加锁）。
 ///  - 回调内**不得阻塞**：库在这条线程上继续收报文，阻塞会导致内核缓冲区溢出丢包。
 ///    处理耗时就把数据拷走、投递到自己的线程。
-class UdpHandler {
+class NETMECH_API UdpHandler {
 public:
     virtual ~UdpHandler() = default;
 
@@ -367,7 +367,7 @@ public:
 /// @par 线程模型
 ///  - `send_to` / `close` / 各查询方法可从**任意线程**调用。
 ///  - 所有回调在该端点所属的 io 线程上串行执行。
-class UdpEndpoint {
+class NETMECH_API UdpEndpoint {
 public:
     /// 发送一个报文。
     ///
