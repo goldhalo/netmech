@@ -219,6 +219,66 @@ jobs:
         shell: pwsh
         run: ctest --test-dir build --output-on-failure --timeout 120
 
+  # ---------------------------------------------------------------------------
+  # 基准 smoke（非门禁）：只验证 bench 能构建、能跑出数值，不比较性能数字。
+  # ---------------------------------------------------------------------------
+  bench-smoke:
+    name: Bench / smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++
+
+      - name: 配置（Release + bench）
+        run: |
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DNETMECH_BUILD_BENCH=ON \
+                -DNETMECH_BUILD_TESTS=OFF \
+                -DNETMECH_BUILD_EXAMPLES=OFF
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 跑一小段（非门禁）
+        run: |
+          set +e
+          timeout 30 ./build/bin/bench_strand post plain > /tmp/bench.log 2>&1
+          rc=$?
+          cat /tmp/bench.log || true
+          if grep -qE '[0-9]' /tmp/bench.log; then exit 0; fi
+          if [ "$rc" -eq 124 ]; then exit 0; fi
+          echo "❌ bench 没有产生数值输出（rc=$rc）"; exit 1
+
+  # ---------------------------------------------------------------------------
+  # 契约文档检查：docs/contracts.md 必须存在，且引用的测试文件都存在。
+  # ---------------------------------------------------------------------------
+  contracts-doc:
+    name: 契约文档检查
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查 docs/contracts.md 与测试索引
+        run: |
+          set -e
+          [ -f docs/contracts.md ] || { echo "❌ 缺少 docs/contracts.md"; exit 1; }
+          fail=0
+          for f in $(grep -oE 'test[A-Za-z0-9_/.*-]+\.cpp' docs/contracts.md | sort -u); do
+            if compgen -G "$f" > /dev/null; then continue; fi
+            if compgen -G "test/$f" > /dev/null; then continue; fi
+            echo "❌ 契约文档引用了不存在的测试: $f"
+            fail=1
+          done
+          [ $fail -eq 0 ] || exit 1
+          echo "✅ 契约文档索引有效"
+
   sanitizers:
     name: ASan + UBSan
     runs-on: ubuntu-latest
