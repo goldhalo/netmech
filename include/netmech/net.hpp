@@ -53,6 +53,7 @@
 
 // 基础类型与错误码
 #include "netmech/common.hpp"
+#include "netmech/stats.hpp"
 #include "netmech/runtime.hpp"
 
 // 协议抽象（P1：为 UDP 铺路；对既有 TCP 用户完全无影响）

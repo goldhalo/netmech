@@ -41,6 +41,7 @@
 #include <utility>
 
 #include "conn_state.hpp"
+#include "stats_internal.hpp"
 #include "address_internal.hpp"
 
 #include "netmech/conn.hpp"
@@ -341,6 +342,7 @@ void Conn::Impl::handle_write_done(const error_code_t& ec, std::size_t n)
             reserved_count = (reserved_count > 0) ? (reserved_count - 1) : 0;
         }
         bytes_written.fetch_add(static_cast<std::uint64_t>(req.bytes), std::memory_order_relaxed);
+        detail::stats_on_write(static_cast<std::uint64_t>(req.bytes));
         if (req.bytes > 0) {
             send_ka.progressed.store(true, std::memory_order_release);
         }
@@ -510,6 +512,7 @@ void Conn::Impl::handle_read_done(const error_code_t& ec, std::size_t n, bool ex
 
     if (!ec) {
         bytes_read.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
+        detail::stats_on_read(static_cast<std::uint64_t>(n));
         if (n > 0) {
             // 只有真正读到数据才算接收方向有进展（保活语义）。
             recv_ka.progressed.store(true, std::memory_order_release);
@@ -845,6 +848,7 @@ void Conn::Impl::do_close(const error_code_t& reason) noexcept
     if (closed.exchange(true, std::memory_order_acq_rel)) {
         return;                              // 幂等：关闭流程已执行过
     }
+    detail::stats_on_close();
     closing.store(true, std::memory_order_release);
     if (!close_reason) {
         close_reason = reason;               // 首个原因胜出
