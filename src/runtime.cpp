@@ -17,6 +17,7 @@
 #include "io_pool.hpp"
 #include "runtime_internal.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -139,12 +140,48 @@ void Runtime::shutdown() noexcept
 //  进程级默认运行时
 // =============================================================================
 
+namespace {
+
+/// 默认运行时创建后记下池指针（只写一次）。退出兜底只碰这个指针 ——
+/// 它是**永不销毁**的池对象，所以静态析构阶段访问也安全。
+std::atomic<IoPool*> g_default_pool{nullptr};
+
+/// 退出兜底：用户忘了调 `netmech::shutdown()` 时，进程正常退出前尽力停线程。
+///
+/// 为什么用"静态对象析构"而不是 `std::atexit`：
+///  - 静态对象析构由 `__cxa_atexit` 登记，**带 DSO 句柄**：共享库被卸载时
+///    会先跑它，不会出现"库已卸载、atexit 还在跑库代码"的崩溃；
+///  - 本对象在装载时构造，因此在应用自己的静态对象**之后**析构 ——
+///    先让应用收尾，再停线程。
+///
+/// 注意：它**不**代替 `netmech::shutdown()`。默认运行时是进程级、io_context
+/// 永不销毁；退出期 io 线程与应用静态析构并发这件事仍然由调用方负责
+/// （在退出前 `close()` 该关的对象）。这里只保证"线程会被 join 掉"。
+struct DefaultRuntimeExitGuard {
+    ~DefaultRuntimeExitGuard()
+    {
+        IoPool* pool = g_default_pool.load(std::memory_order_acquire);
+        if (pool == nullptr) {
+            return;   // 默认运行时从未被使用：不创建、不打扰
+        }
+        pool->stop_all();
+        pool->join_threads();
+    }
+};
+
+/// 装载时构造，退出时析构（见上）。
+DefaultRuntimeExitGuard g_default_runtime_exit_guard;
+
+} // namespace
+
 Runtime& default_runtime()
 {
     // 包住 IoPool::global()（即 initialize()/shutdown() 一直管理的那一个）。
     // 故意不释放：默认运行时与进程同寿。
     static Runtime* const instance = []() -> Runtime* {
-        Runtime::Impl* impl = new Runtime::Impl(&IoPool::global());
+        IoPool& pool = IoPool::global();
+        g_default_pool.store(&pool, std::memory_order_release);   // 退出兜底用
+        Runtime::Impl* impl = new Runtime::Impl(&pool);
         return new Runtime(impl);
     }();
     return *instance;
