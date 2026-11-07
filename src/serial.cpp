@@ -50,9 +50,9 @@ public:
     Impl(asio::io_context& io_ctx, IoPool& pool_ref,
          std::shared_ptr<Runtime> rt,
          SerialConfig conf, std::shared_ptr<SerialHandler> h)
-        : io(io_ctx)
+        : runtime(std::move(rt))
+        , io(io_ctx)
         , port(io_ctx)
-        , runtime(std::move(rt))
         , pool(&pool_ref)
         , cfg(std::move(conf))
         , handler(std::move(h))
