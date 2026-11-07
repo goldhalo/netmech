@@ -120,6 +120,8 @@ class io_context;
 
 namespace netmech {
 
+class Runtime;   ///< 可注入的 io 运行时（netmech/runtime.hpp）
+
 // =============================================================================
 //  常量
 // =============================================================================
@@ -229,6 +231,18 @@ std::shared_ptr<UdpEndpoint>
 NETMECH_API create_udp_endpoint(const UdpConfig&          cfg,
                     std::shared_ptr<UdpHandler> handler,
                     std::shared_ptr<void>     user_ctx,
+                    std::error_code&          ec);
+
+/// 用**指定的运行时**创建 UDP 端点（可注入；线程数由该 Runtime 决定）。
+///
+/// @param[in] runtime 传 nullptr 等价于旧重载（进程级默认运行时）。
+/// @note 本对象会持有该运行时直到析构。
+/// @note 多 .so 进程必须让 netmech 以共享库形式被所有模块共用（见 runtime.hpp）。
+std::shared_ptr<UdpEndpoint>
+NETMECH_API create_udp_endpoint(const UdpConfig&          cfg,
+                    std::shared_ptr<UdpHandler> handler,
+                    std::shared_ptr<void>     user_ctx,
+                    std::shared_ptr<Runtime>  runtime,
                     std::error_code&          ec);
 
 /// 用 @p anchor 所在的 **io_context** 创建新端点。
@@ -550,7 +564,8 @@ private:
     friend std::shared_ptr<UdpEndpoint>
     create_udp_endpoint_impl(::asio::io_context&, const UdpConfig&,
                              std::shared_ptr<UdpHandler>,
-                             std::shared_ptr<void>, std::error_code&);
+                             std::shared_ptr<void>, std::shared_ptr<Runtime>,
+                                          std::error_code&);
 
     std::shared_ptr<Impl> m_impl;
 };

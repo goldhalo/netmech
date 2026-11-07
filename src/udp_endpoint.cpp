@@ -21,6 +21,9 @@
 
 #include "address_internal.hpp"
 #include "io_pool.hpp"
+#include "runtime_internal.hpp"
+
+#include "netmech/runtime.hpp"
 
 #include <array>
 #include <chrono>
@@ -59,10 +62,12 @@ std::atomic<std::uint64_t>& udp_id_counter() noexcept
 // =============================================================================
 
 struct UdpEndpoint::Impl : public std::enable_shared_from_this<UdpEndpoint::Impl> {
-    Impl(asio::io_context& io_ctx, IoPool& pool_ref, UdpConfig conf)
+    Impl(asio::io_context& io_ctx, IoPool& pool_ref,
+         std::shared_ptr<Runtime> rt, UdpConfig conf)
         : io(io_ctx)
         , socket(io)
         , pool(&pool_ref)
+        , runtime(std::move(rt))
         , cfg(std::move(conf))
         , id(udp_id_counter().fetch_add(1, std::memory_order_relaxed) + 1)
     {
@@ -71,6 +76,7 @@ struct UdpEndpoint::Impl : public std::enable_shared_from_this<UdpEndpoint::Impl
     io_context_t&                 io;
     udp::socket                   socket;
     IoPool*                       pool;
+    std::shared_ptr<Runtime>      runtime;   ///< 注入运行时（保持池存活）
     UdpConfig                     cfg;
     std::uint64_t                 id;
 
@@ -527,6 +533,7 @@ std::shared_ptr<UdpEndpoint> create_udp_endpoint_impl(asio::io_context&         
                                                       const UdpConfig&           cfg,
                                                       std::shared_ptr<UdpHandler> handler,
                                                       std::shared_ptr<void>      user_ctx,
+                                                      std::shared_ptr<Runtime>   runtime,
                                                       std::error_code&           ec);
 
 std::shared_ptr<UdpEndpoint> create_udp_endpoint(const UdpConfig&            cfg,
@@ -534,8 +541,23 @@ std::shared_ptr<UdpEndpoint> create_udp_endpoint(const UdpConfig&            cfg
                                                  std::shared_ptr<void>       user_ctx,
                                                  std::error_code&            ec)
 {
-    return create_udp_endpoint_impl(IoPool::global().next_io_context(), cfg,
-                                std::move(handler), std::move(user_ctx), ec);
+    return create_udp_endpoint(cfg, std::move(handler), std::move(user_ctx),
+                               nullptr, ec);
+}
+
+std::shared_ptr<UdpEndpoint> create_udp_endpoint(const UdpConfig&            cfg,
+                                                 std::shared_ptr<UdpHandler> handler,
+                                                 std::shared_ptr<void>       user_ctx,
+                                                 std::shared_ptr<Runtime>    runtime,
+                                                 std::error_code&            ec)
+{
+    if (!runtime) {
+        runtime = detail::default_runtime_handle();
+    }
+    IoPool& pool = detail::runtime_pool(*runtime);
+    return create_udp_endpoint_impl(pool.next_io_context(), cfg,
+                                    std::move(handler), std::move(user_ctx),
+                                    std::move(runtime), ec);
 }
 
 std::shared_ptr<UdpEndpoint> create_udp_endpoint_on(const UdpEndpoint&          anchor,
@@ -550,13 +572,15 @@ std::shared_ptr<UdpEndpoint> create_udp_endpoint_on(const UdpEndpoint&          
     }
     // 跟随 anchor 的 io_context —— 保证两个端点的回调在同一条线程上
     return create_udp_endpoint_impl(anchor.m_impl->io, cfg,
-                                std::move(handler), std::move(user_ctx), ec);
+                                std::move(handler), std::move(user_ctx),
+                                anchor.m_impl->runtime, ec);
 }
 
 std::shared_ptr<UdpEndpoint> create_udp_endpoint_impl(asio::io_context&          io,
                                                       const UdpConfig&           cfg,
                                                       std::shared_ptr<UdpHandler> handler,
                                                       std::shared_ptr<void>      user_ctx,
+                                                      std::shared_ptr<Runtime>   runtime,
                                                       std::error_code&           ec)
 {
     ec.clear();
@@ -570,7 +594,11 @@ std::shared_ptr<UdpEndpoint> create_udp_endpoint_impl(asio::io_context&         
         return nullptr;
     }
 
-    auto impl = std::make_shared<UdpEndpoint::Impl>(io, IoPool::global(), cfg);
+    if (!runtime) {
+        runtime = detail::default_runtime_handle();
+    }
+    IoPool& pool = detail::runtime_pool(*runtime);
+    auto impl = std::make_shared<UdpEndpoint::Impl>(io, pool, std::move(runtime), cfg);
     impl->handler  = std::move(handler);
     impl->user_ctx = std::move(user_ctx);
     impl->recv_buf.resize(cfg.recv_capacity);
