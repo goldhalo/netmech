@@ -82,6 +82,8 @@ public:
     ///
     /// @return false 表示未受理（已停止 / 队列满）。**调用方要处理这个返回值**：
     ///         丢弃、计数、或者放慢上游。
+    /// @note 任务抛异常由池兜底（与 io 回调同一口径）：不会终止业务线程、
+    ///       不影响后续任务，该任务计入 completed。
     bool post(std::function<void()> job);
 
     /// 投递到**指定线程**（按 `index % 线程数` 取模）。
@@ -89,6 +91,7 @@ public:
     /// @par 什么时候需要
     ///  同一个会话的回调要保持顺序（比如 RTSP 的 OPTIONS → DESCRIBE → SETUP
     ///  必须按序处理）。用会话 id 做 index 就能保证落到同一条线程。
+    /// @note 任务异常策略同 `post()`。
     bool post_to(std::size_t index, std::function<void()> job);
 
     /// 当前是否在**业务线程**上执行。

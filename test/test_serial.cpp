@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <thread>
 #include <array>
 #include <memory>
@@ -24,6 +25,9 @@
 #include <system_error>
 
 #include "test_framework.hpp"
+
+// 内部头：只为取串口写投递的测试注入点（声明-only，SHARED 下也不引用符号）。
+#include "../src/serial_internal.hpp"
 
 #if defined(__linux__)
 #include <fcntl.h>
@@ -123,6 +127,12 @@ bool wait_for(Pred pred, std::chrono::milliseconds timeout = 2000ms)
     }
     return pred();
 }
+
+// 写投递失败注入用例的状态：钩子是无捕获函数指针，上下文只能放
+// 命名空间级静态变量（用例串行运行，无并发）。
+std::shared_ptr<SerialPort>                  g_post_fault_port;
+std::shared_ptr<std::array<std::uint8_t, 4>> g_post_fault_payload;
+std::atomic<bool>                            g_post_fault_b_accepted{false};
 
 } // namespace
 
@@ -394,3 +404,195 @@ NETMECH_TEST(serial_cross_thread_writes_with_pending_read)
     CHECK(true);
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// 8. drain 带队列场景：先等队列排空，再按累计字节数估算移出时间
+//
+//    修复前：drain 不看发送队列，只等 ~2 个字符时间（9600bps 下 ~2ms）
+//    就返回 true —— 队列里压着 N 笔未发数据也"排空成功"，RS-485 方向
+//    控制会截断帧尾。这里压入 8 笔 × 64 字节 = 512 字节（9600bps 下
+//    移出约需 533ms），钉住两条契约：
+//      ① drain 返回时所有已受理的写都已完成 on_write；
+//      ② 等待时长 ≥ 累计字节数按波特率的移出时间。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(serial_drain_waits_for_queued_writes)
+{
+#if defined(__linux__)
+    Pty pty;
+    REQUIRE(pty.open_());
+
+    SerialConfig cfg;
+    cfg.device    = pty.slave;
+    cfg.baud_rate = 9600;
+    cfg.data_bits = 8;
+
+    std::error_code ec;
+    auto h    = std::make_shared<Sink>();
+    auto port = SerialPort::create(cfg, h, ec);
+    REQUIRE(port != nullptr);
+
+    // 一次性压入 8 笔（owner 延长缓冲生命周期到 on_write，同用例 7 的契约）。
+    constexpr int kWrites = 8;
+    auto payload = std::make_shared<std::array<std::uint8_t, 64>>();
+    payload->fill(0x5A);
+    for (int i = 0; i < kWrites; ++i) {
+        REQUIRE(port->write(ConstBuf{payload, payload->data(), payload->size()}));
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::error_code dec;
+    const bool ok = port->drain(dec);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - t0).count();
+
+    CHECK(ok);
+    EXPECT_OK(dec);
+    // 契约①：返回即排空 —— 不需要再等回调
+    CHECK_EQ(h->writes.load(), kWrites);
+    // 契约②：512 字节 × 10 bit / 9600bps ≈ 533ms（sleep_for 保证下界，不 flaky）
+    constexpr long long kExpectedMs = 512LL * 10 * 1000 / 9600;
+    CHECK_GE(elapsed_ms, kExpectedMs);
+
+    port->close();
+#else
+    CHECK(true);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// 9. 空队列 drain：保持旧的快速返回行为（约 2 个字符时间）
+// ---------------------------------------------------------------------------
+NETMECH_TEST(serial_drain_empty_queue_returns_fast)
+{
+#if defined(__linux__)
+    Pty pty;
+    REQUIRE(pty.open_());
+
+    SerialConfig cfg;
+    cfg.device    = pty.slave;
+    cfg.baud_rate = 9600;
+
+    std::error_code ec;
+    auto h    = std::make_shared<Sink>();
+    auto port = SerialPort::create(cfg, h, ec);
+    REQUIRE(port != nullptr);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    std::error_code dec;
+    const bool ok = port->drain(dec);
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - t0).count();
+
+    CHECK(ok);
+    EXPECT_OK(dec);
+    CHECK_LT(elapsed_ms, 500);   // 无积压时不应白等
+
+    port->close();
+#else
+    CHECK(true);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// 10. 关闭后 drain 返回 false + link_closed
+// ---------------------------------------------------------------------------
+NETMECH_TEST(serial_drain_closed_port_fails)
+{
+#if defined(__linux__)
+    Pty pty;
+    REQUIRE(pty.open_());
+
+    SerialConfig cfg;
+    cfg.device = pty.slave;
+
+    std::error_code ec;
+    auto h    = std::make_shared<Sink>();
+    auto port = SerialPort::create(cfg, h, ec);
+    REQUIRE(port != nullptr);
+
+    port->close();   // open_ 同步翻 false，drain 立即拒绝
+
+    std::error_code dec;
+    CHECK(!port->drain(dec));
+    CHECK(dec == NetErrc::link_closed);
+#else
+    CHECK(true);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// 11. 写投递失败：回滚不得搁浅并发入队的后续写
+//
+//    修复前：A 入队后解锁，B 看到 writing=true 入队（已受理）；A 的
+//    asio::post 抛异常时回滚只 pop 队首并置 writing=false —— B 留在
+//    队列里却没有任何 do_write 在途，on_write 永不回调。
+//    修复后：撤回 A 后队列非空则保持 writing=true 并重投 do_write。
+//    注入钩子在 A 的线程上、解锁后运行，在里面入队 B 即可确定性
+//    复现该交错（仅 Linux pty + STATIC 构建）。
+// ---------------------------------------------------------------------------
+#if defined(__linux__) && !defined(NETMECH_SHARED)
+NETMECH_TEST(serial_write_post_failure_does_not_strand_concurrent_writes)
+{
+    Pty pty;
+    REQUIRE(pty.open_());
+
+    SerialConfig cfg;
+    cfg.device    = pty.slave;
+    cfg.baud_rate = 115200;
+
+    std::error_code ec;
+    auto h    = std::make_shared<Sink>();
+    auto port = SerialPort::create(cfg, h, ec);
+    REQUIRE(port != nullptr);
+
+    auto payload_a = std::make_shared<std::array<std::uint8_t, 4>>(
+        std::array<std::uint8_t, 4>{{0xA1, 0xA2, 0xA3, 0xA4}});
+    g_post_fault_port    = port;
+    g_post_fault_payload = std::make_shared<std::array<std::uint8_t, 4>>(
+        std::array<std::uint8_t, 4>{{0xB1, 0xB2, 0xB3, 0xB4}});
+    g_post_fault_b_accepted.store(false);
+
+    // 钩子：先入队 B（模拟并发线程，此时 writing=true ⇒ B 直接受理），
+    // 再抛异常模拟 A 的投递失败。
+    detail::serial_post_fault_hook = []() {
+        g_post_fault_b_accepted.store(g_post_fault_port->write(
+            ConstBuf{g_post_fault_payload, g_post_fault_payload->data(),
+                     g_post_fault_payload->size()}));
+        throw std::bad_alloc();
+    };
+    const bool a_accepted = port->write(
+        ConstBuf{payload_a, payload_a->data(), payload_a->size()});
+    detail::serial_post_fault_hook = nullptr;
+
+    CHECK(!a_accepted);                      // A 未受理，缓冲立即归还
+    CHECK(g_post_fault_b_accepted.load());   // B 已受理
+
+    // B 必须恰好一次 on_write（修复前：被搁浅，永不回调）
+    REQUIRE(wait_for([&] { return h->writes.load() >= 1; }, 2000ms));
+    CHECK_EQ(h->writes.load(), 1);
+    CHECK(!h->last_write_ec);
+
+    // 对端收到的是 B 的数据（A 已撤回，不得出现在线上）
+    std::uint8_t got[8] = {};
+    std::size_t  total  = 0;
+    const auto deadline = std::chrono::steady_clock::now() + 2000ms;
+    while (total < 4 && std::chrono::steady_clock::now() < deadline) {
+        const ssize_t n = ::read(pty.master, got + total, sizeof(got) - total);
+        if (n > 0) { total += static_cast<std::size_t>(n); }
+        else { std::this_thread::sleep_for(1ms); }
+    }
+    CHECK_EQ(total, std::size_t{4});
+    CHECK_EQ(got[0], 0xB1);
+    CHECK_EQ(got[3], 0xB4);
+
+    port->close();
+    g_post_fault_port.reset();
+    g_post_fault_payload.reset();
+}
+#else
+NETMECH_TEST(serial_write_post_failure_does_not_strand_concurrent_writes)
+{
+    // Windows 需 com0com；SHARED 不导出内部注入点 —— 同其余串口用例跳过。
+    CHECK(true);
+}
+#endif

@@ -8,6 +8,7 @@
 
 #include "io_pool.hpp"
 #include "runtime_internal.hpp"
+#include "serial_internal.hpp"
 
 #include "netmech/runtime.hpp"
 #include "netmech_srcpch.hpp"
@@ -40,6 +41,11 @@
 #include <utility>
 
 namespace netmech {
+
+namespace detail {
+// 测试故障注入点（语义见 serial_internal.hpp）。默认 nullptr。
+void (*serial_post_fault_hook)() = nullptr;
+} // namespace detail
 
 // =============================================================================
 //  Impl
@@ -197,6 +203,7 @@ public:
             }
             send_q.push_back(buf);
             queued_bytes += buf.size;
+            drain_bytes += buf.size;
 
             if (!writing) {
                 writing = true;
@@ -229,16 +236,41 @@ public:
                 return false;   // 不是 shared_ptr 管理（不该发生）
             }
             try {
+                // 测试注入点：抛异常即模拟投递失败（见 serial_internal.hpp）。
+                if (detail::serial_post_fault_hook != nullptr) {
+                    detail::serial_post_fault_hook();
+                }
                 asio::post(port.get_executor(), [self] { self->do_write(); });
             } catch (...) {
-                // 投递失败（内存不足等）：把刚入队的这笔撤回，按"未受理"返回。
-                // need_start 为真 ⇒ 入队前队列为空 ⇒ 撤回的就是这一笔。
-                std::lock_guard<std::mutex> lk(send_mtx);
-                if (!send_q.empty()) {
-                    queued_bytes -= send_q.front().size;
-                    send_q.pop_front();
+                // 投递失败（内存不足等）：撤回本笔，按"未受理"返回。
+                //
+                // ★ need_start 为真只说明"本笔入队前队列为空"：解锁后别的
+                //   线程可能已经看到 writing=true 而入队了后续写（那笔已受理）。
+                //   因此撤掉队首（本笔）后若队列仍非空，必须保持 writing=true
+                //   并为剩余笔重投 do_write —— 否则它们被搁浅在队列里、没有
+                //   任何在途写，on_write 永不回调（违反"true ⇒ 恰好一次回调"）。
+                bool need_restart = false;
+                {
+                    std::lock_guard<std::mutex> lk(send_mtx);
+                    if (!send_q.empty()) {
+                        queued_bytes -= send_q.front().size;
+                        drain_bytes -= send_q.front().size;
+                        send_q.pop_front();
+                    }
+                    need_restart = !send_q.empty();
+                    if (!need_restart) {
+                        writing = false;
+                    }
                 }
-                writing = false;
+                if (need_restart) {
+                    try {
+                        asio::post(port.get_executor(), [self] { self->do_write(); });
+                    } catch (...) {
+                        // 连续失败（极端 OOM）：剩余已受理的写无法投递，
+                        // 关端口收敛（同写错误的处置），不留静默搁浅。
+                        post_close();
+                    }
+                }
                 return false;
             }
         }
@@ -365,6 +397,17 @@ public:
     //  其它
     // -------------------------------------------------------------------------
 
+    /// 一个字符的传输时间（毫秒）：起始位 + 数据位 + 校验位 + 停止位，除以波特率。
+    double ms_per_char() const noexcept
+    {
+        const double bits_per_char = 1.0 + static_cast<double>(cfg.data_bits)
+                                     + (cfg.stop_bits == SerialStopBits::two ? 2.0 : 1.0)
+                                     + (cfg.parity == SerialParity::none ? 0.0 : 1.0);
+        const double baud = static_cast<double>(cfg.baud_rate == 0u ? 9600u
+                                                                    : cfg.baud_rate);
+        return bits_per_char * 1000.0 / baud;
+    }
+
     bool do_drain(std::error_code& out_ec)
     {
         if (!open_.load(std::memory_order_acquire)) {
@@ -372,23 +415,64 @@ public:
             return false;
         }
 
-        // Asio 没有暴露 tcdrain / FlushFileBuffers，所以没法"精确等到最后一个
-        // 字节移出移位寄存器"。
-        //
-        // 这里按波特率**估算**一个字（10 bit：1 起始 + 8 数据 + 1 停止）的
-        // 传输时间，等这么长就认为发完了。对 RS-485 方向控制够用：
-        // 9600bps 下一个字节约 1.04ms，等 2ms 有余量。
-        //
-        // 想更精确的话，应该在应用层用平台的 tcdrain/FlushFileBuffers。
-        const double bits_per_char = 1.0 + static_cast<double>(cfg.data_bits)
-                                     + (cfg.stop_bits == SerialStopBits::two ? 2.0 : 1.0)
-                                     + (cfg.parity == SerialParity::none ? 0.0 : 1.0);
-        const double ms_per_char = bits_per_char * 1000.0
-                                   / static_cast<double>(cfg.baud_rate == 0u
-                                                             ? 9600u
-                                                             : cfg.baud_rate);
-        const auto wait_ms = std::max(1, static_cast<int>(ms_per_char * 2.0 + 0.5));
+        const double char_ms = ms_per_char();
 
+        // ── 第 1 段：带超时等待发送队列排空 ─────────────────────────
+        //
+        // "队列排空" = 所有已受理的写都完成了 on_write（数据进了内核缓冲）。
+        // 旧实现完全不看队列：压着 N 笔未发数据也立即"排空成功"，
+        // RS-485 方向控制会因此截断帧尾。
+        //
+        // 超时预算：当前积压字节按波特率估算移出时间的 2 倍 + 1s 余量，
+        // 保底 1s（队列空时第 1 段立即通过，不会白等）。
+        std::size_t pending = 0;
+        {
+            std::lock_guard<std::mutex> lk(send_mtx);
+            pending = queued_bytes;
+        }
+        const auto budget_ms = std::max<std::int64_t>(
+            1000, static_cast<std::int64_t>(pending * char_ms * 2.0) + 1000);
+        const auto deadline = std::chrono::steady_clock::now()
+                              + std::chrono::milliseconds(budget_ms);
+
+        std::size_t bytes = 0;
+        bool drained = false;
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lk(send_mtx);
+                if (send_q.empty() && !writing) {
+                    // 同一临界区里取走累计字节数：此后入队的写属于
+                    // "下一次" drain 的覆盖范围，不会被本次误清零。
+                    bytes = drain_bytes;
+                    drain_bytes = 0;
+                    drained = true;
+                }
+            }
+            if (drained) {
+                break;
+            }
+            if (!open_.load(std::memory_order_acquire)) {
+                out_ec = make_boost_error_code(NetErrc::link_closed);
+                return false;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                out_ec = std::make_error_code(std::errc::timed_out);
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        // ── 第 2 段：按累计字节数估算"移出硬件"时间 ───────────────────
+        //
+        // Asio 没有暴露 tcdrain / FlushFileBuffers，没法"精确等到最后一个
+        // 字节移出移位寄存器"，这里按波特率估算：
+        //   时长 = 自上次 drain 以来受理的字节数 × 每字符时间 + 2 字符余量。
+        // 对 RS-485 方向控制场景（写完立即 drain）这是保守估算：写完成到
+        // drain 之间已移出的部分无法精确扣除，宁可多等不可少等截帧。
+        // 9600bps 下 256 字节约需 267ms —— 旧实现只等 ~2ms，远远不够。
+        // 想更精确的话，应该在应用层用平台的 tcdrain/FlushFileBuffers。
+        const auto wait_ms = std::max(
+            1, static_cast<int>(bytes * char_ms + char_ms * 2.0 + 0.5));
         std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
         out_ec.clear();
         return true;
@@ -411,6 +495,9 @@ public:
     std::mutex        send_mtx;
     std::deque<ConstBuf> send_q;
     std::size_t       queued_bytes = 0;
+    /// 自上次 drain 以来受理的写字节累计（send_mtx 下读写）。
+    /// do_drain 用它按波特率估算"移出硬件"时间；drain 成功后清零。
+    std::size_t       drain_bytes = 0;
     bool              writing = false;
 
 };

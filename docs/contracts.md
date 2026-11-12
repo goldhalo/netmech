@@ -23,6 +23,7 @@
 | 2.3 | 连接关闭：在途 read/write 以错误各归还一次，且先于 `on_close` | `test_contracts.cpp`、`test_conn_flow.cpp` |
 | 2.4 | `on_linkdown` 只对"曾交给 Linkable 的连接"调用，且恰好一次 | `test_conn_basic.cpp` |
 | 2.5 | `on_idle`：保活**每次**未通过都回调一次（不是只在超时时调一次） | `test_conn_flow.cpp` |
+| 2.6 | connect 已受理但端点创建失败（id 耗尽等）：`on_linkfail` 仍恰好一次（不被幂等守卫吞掉） | `test_conn_regress.cpp` |
 
 ## 3. 读写与缓冲（`Conn`）
 
@@ -32,6 +33,7 @@
 | 3.2 | `write` 成功受理后 `buf` 内容不得修改、内存必须有效直到 `on_write` 返回 | `test_conn_write.cpp` |
 | 3.3 | `write` 完成回调顺序与受理顺序严格一致（FIFO），出错时剩余请求也按序各回调一次 | `test_conn_write.cpp` |
 | 3.4 | `buf.owner` 非空时库持有它直到完成回调（调用方可立即释放源数据） | `test_conn_write.cpp` |
+| 3.5 | 串口写投递失败回滚不搁浅并发入队的后续写：已受理的写仍恰好一次 `on_write` | `test_serial.cpp` |
 
 ## 4. 关闭与关停
 
@@ -42,6 +44,8 @@
 | 4.3 | `netmech::shutdown()` 后再 `listen()` / `connect()` 返回 `not_initialized`；在途回调不再执行 | `test_lifecycle.cpp` |
 | 4.4 | `UdpEndpoint::close()` 触发 `on_close`；**仅** shared_ptr 析构不触发 | `test_udp_endpoint.cpp` |
 | 4.5 | `SerialPort::close()` 幂等；在途读先以 `on_read(ec)` 兑现、后 `on_close` | `test_serial.cpp` |
+| 4.6 | `SerialPort::drain()` 先带超时等发送队列排空（返回时已受理的写都完成 `on_write`），再按累计字节数估算移出时间；关闭后返回 `link_closed` | `test_serial.cpp` |
+| 4.7 | 运行时 shutdown 后：UDP 工厂拒绝（`not_initialized`）、已有端点 `send_to` 返回 false（与 TCP listen/connect 口径一致） | `test_udp_endpoint.cpp` |
 
 ## 5. 处理器生命周期（重要陷阱）
 
@@ -60,6 +64,7 @@
 | 6.3 | Mechanism/SerialPort/UdpEndpoint 持有注入 Runtime 的强引用（宿主先放手也安全） | `test_runtime.cpp` |
 | 6.4 | 多 .so 进程必须让 netmech 以共享库形式被共用；跨静态副本注入会崩 | `test/multi_so/`（仅 SHARED） |
 | 6.5 | 默认运行时退出兜底：用户没调 `shutdown()` 时，进程退出前 join 线程（不替代 shutdown） | 无（进程级，`/tmp` 手工验证） |
+| 6.6 | `Runtime::create(opts, ec)` 线程创建失败时返回 nullptr + `not_initialized`，**不死锁**（start 失败路径先释放 work_guard + stop 再 join） | `test_runtime.cpp` |
 
 ## 7. 其它
 
@@ -68,6 +73,9 @@
 | 7.1 | `Address` 解析失败降级为通配地址（不抛异常） | `test_address.cpp` |
 | 7.2 | `find_free_port_run` 只探测、不预留；返回后到 bind 之间可能被抢（TOCTOU 是预期行为） | `test_port_allocator.cpp` |
 | 7.3 | 公共头不泄漏 Asio 类型；每个头可单独包含 | 质量检查 job |
+| 7.4 | 公共非 inline 函数/类都带 `NETMECH_API`（Windows DLL 导出面完整，下游不报 LNK2019） | `test_contracts.cpp` + windows-shared job |
+| 7.5 | connect **不去重**：同一 remote 允许多个在途 connect，每笔独立对应一次 on_linkup/on_linkfail；`duplicate_endpoint` 仅用于 listen | `mechanism.cpp` 实现（键带自增序号） |
+| 7.6 | WorkerPool 任务抛异常由池兜底：不终止业务线程、不影响后续任务，计数配平（抛异常的任务计入 completed） | `test_worker_pool.cpp` |
 
 ## 维护约定
 
@@ -80,7 +88,7 @@
 |---|---|---|
 | 8.1 | **回调内不抛异常**；库内所有用户回调都经 `invoke_void` 包裹，异常不会穿过 io 线程 | `socket_ops`/`conn.cpp` 实现 + 契约测试 |
 | 8.2 | 工厂函数失败**返回 nullptr + 填 `ec`**（`Mechanism`/`SerialPort`/`UdpEndpoint`/`WorkerPool`/`Runtime::create(opts,ec)`） | `test_runtime.cpp` 等 |
-| 8.3 | 不提供 `ec` 的重载（`Runtime::create(opts)`、`Mechanism::create()`）在线程创建失败等**启动期致命错误**上 `std::terminate()` / 抛 `std::bad_alloc`；这类错误无法用 error_code 表达 | `runtime.cpp` 注释 |
+| 8.3 | 不提供 `ec` 的重载在线程创建失败等**启动期致命错误**上：`Runtime::create(opts)` 打印诊断后 `std::terminate()`（**不抛异常**）；`Mechanism::create()` 可能抛 `std::bad_alloc`。需要可恢复失败处理用 `Runtime::create(opts, ec)` | `runtime.cpp` 注释 + `runtime.hpp` |
 | 8.4 | `NetErrc` 是**唯一**的错误源；`ec == NetErrc::xxx` 可直接比较（std::error_code 的 ADL 比较） | `common.hpp` |
 | 8.5 | `make_boost_error_code()` / `from_boost_error_code()` 是**兼容层（legacy）**：仅为既有调用方保留，新代码请用 `std::error_code` + `NetErrc` | `common.hpp` |
 

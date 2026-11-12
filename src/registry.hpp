@@ -83,6 +83,18 @@ public:
         return counter().load(std::memory_order_relaxed);
     }
 
+    /// 测试专用：把计数器置为 @p v，返回旧值（供用例结束后恢复）。
+    ///
+    /// 用于回归"id 耗尽 → make_endpoint 返回空"的失败路径
+    /// （test_conn_regress.cpp 的 connect 通知用例）。
+    /// @warning 生产代码不得调用：破坏单调性会造成 id 复用，
+    ///          让旧 id 的迟到回调命中新连接。仅单元测试使用，
+    ///          且用完必须立即恢复旧值。
+    static endpoint_id_t test_set_counter(endpoint_id_t v) noexcept
+    {
+        return counter().exchange(v, std::memory_order_relaxed);
+    }
+
 private:
     /// 已分配到的最大 id。首次分配从 1 开始。
     ///

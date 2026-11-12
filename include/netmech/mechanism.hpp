@@ -91,8 +91,9 @@ inline constexpr std::uint32_t kDefaultBacklog = 128;
 ///
 /// @par 线程安全性
 ///  - 全部 public 方法线程安全，可从任意线程调用。
-///  - 但 listen()/connect() 有"重复地址"检测，并发调用同一地址时以先到者
-///    成功、后到者返回 `NetErrc::duplicate_endpoint` 为准。
+///  - listen() 有"重复地址"检测：并发监听同一地址时以先到者成功、
+///    后到者返回 `NetErrc::duplicate_endpoint` 为准。connect() **不去重**：
+///    同一 remote 允许多个在途 connect（连接池/并发探测是常见业务需求）。
 ///
 /// @par 使用示例
 /// @code
@@ -188,13 +189,15 @@ public:
     ///       shared_ptr，Mechanism 仍然安全（线程池不会消失）。
     static std::shared_ptr<Mechanism> create(Config cfg, std::shared_ptr<Runtime> runtime);
 
-    /// 析构：等价于 close_all() 后再 join 全部 io 线程。
+    /// 析构：等价于 close_all()（停监听、请求关闭全部连接、清表），
+    /// 但**不停止 / 不 join io 线程** —— 运行时是进程级/注入的，生命周期
+    /// 不归单个 Mechanism 管（与本文件头"生命周期与线程池存活"一致）。
     ///
-    /// @warning **会阻塞**，直到所有 io 线程退出。不要在 io 回调内部释放最后
-    ///          一个 shared_ptr<Mechanism>（实现会检测到并避免自我 join，
-    ///          但仍建议把释放动作放到业务线程）。
-    /// @note 任何仍在途的 async_* 回调都会以 operation_aborted 被调用完毕
-    ///       之后线程才退出。
+    /// @note **快速返回**，不等待 io 线程退出。线程的回收由
+    ///       `netmech::shutdown()`（默认运行时）或 `Runtime::shutdown()`
+    ///       （注入运行时）负责。
+    /// @note 在途回调由"强自持"机制保证执行完毕（关闭流程 / on_close /
+    ///       on_linkdown 不会丢），但那发生在 io 线程上、异步于析构。
     ~Mechanism();
 
     // -------------------------------------------------------------------------
@@ -251,7 +254,10 @@ public:
     ///       监听时不做任何动作（避免猜错对象）。
     ///
     /// @par 线程安全性
-    ///  - 可从任意线程调用；不会阻塞等待 accept 循环退出（异步收敛）。
+    ///  - 可从任意线程调用。外部线程调用时**有界等待**（至多 500ms）
+    ///    accept 循环收敛，保住"返回后端口已释放"的语义（unlisten 后
+    ///    立刻重 listen 同一端口不会撞 address_in_use）；在 io 线程上
+    ///    调用时只投递不等待（不能等自己）。
     ///  - 与 `listen()` 并发调用同一地址时，两者之一生效，不会出现半个监听器。
     std::error_code unlisten(const Address& local);
 
@@ -299,11 +305,14 @@ public:
     ///                       需要指定出口网卡/固定源端口时使用。
     /// @return 受理成功返回 `std::error_code{}`。
     ///         失败返回 `make_boost_error_code(...)`，可能值：
-    ///         * `NetErrc::not_connected`   运行时已关闭，无法发起；
-    ///         * `NetErrc::invalid_argument` 地址非法；
-    ///         * `NetErrc::duplicate_endpoint` 同一 remote 已有未完成的 connect
-    ///           （避免重复建链，保证一次 connect 对应一次 on_linkup/on_linkfail）；
-    ///         * 其余为底层 resolve/bind 错误。
+    ///         * `NetErrc::not_initialized`  运行时尚未初始化或已 shutdown；
+    ///         * `NetErrc::invalid_argument` 地址非法（通配地址 / 端口 0）；
+    ///         * `NetErrc::link_closed`      受理期间被 close_all() 放弃；
+    ///         * 其余为底层 open/bind 错误。
+    ///
+    /// @note **不去重**：同一 remote 允许多个在途 connect，每笔独立对应
+    ///       一次 on_linkup/on_linkfail（连接池、并发探测、压力测试是常见
+    ///       需求）。`duplicate_endpoint` 仅用于 listen()。
     ///
     /// @par 失败语义
     ///  - 返回非零表示**未受理**：**不会**调用 on_linkup，也**不会**调用

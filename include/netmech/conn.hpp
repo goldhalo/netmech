@@ -212,7 +212,8 @@ public:
     /// **第 `max_miss` 次回调返回之后**才以 `NetErrc::keepalive_timeout`
     /// 结束连接 —— 前面几次是处置窗口（发心跳、记日志、主动 close）。
     ///
-    /// @param[in] delay    连接建立后到首次检查的延迟（可为 0）。
+    /// @param[in] delay    连接建立后的宽限期（可为 0）。首次检查发生在
+    ///                     `delay + interval` 时刻，此后每隔 `interval` 一次。
     /// @param[in] interval 检查间隔，必须 > 0。
     /// @param[in] max_miss 允许连续未收到数据的次数，必须 >= 1。
     /// @note 参数非法时**静默忽略**（`interval > 0`、`max_miss >= 1`、`delay >= 0`）。
@@ -232,7 +233,8 @@ public:
     /// 每隔 `interval` 检查"自上次检查以来是否成功写出过"；每次未通过都回调
     /// `ConnHandler::on_idle()`（`kind == send`），第 `max_miss` 次之后才断链。
     ///
-    /// @param[in] delay    连接建立后到首次检查的延迟（可为 0）。
+    /// @param[in] delay    连接建立后的宽限期（可为 0）。首次检查发生在
+    ///                     `delay + interval` 时刻，此后每隔 `interval` 一次。
     /// @param[in] interval 检查间隔，必须 > 0。
     /// @param[in] max_miss 允许的连续未写出次数，必须 >= 1。
     /// @note 参数非法时静默忽略。重复调用以新参数重启定时器。

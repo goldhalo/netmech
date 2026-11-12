@@ -23,9 +23,18 @@
 #include <mutex>
 #include <string>
 #include <system_error>
+#include <thread>
 
 #include "test_framework.hpp"
 #include "test_support.hpp"
+
+// 内部头：只为取 IoPool::start_fault_hook（线程创建失败的测试注入点）。
+// SHARED 构建下内部符号不导出（导出面 = 公共 API），测试程序链不到
+// 内部钩子 —— 故障注入用例只在 STATIC 构建下编译（CI 的 linux/windows
+// 默认 job 都是 STATIC，覆盖不受影响）。
+#if !defined(NETMECH_SHARED)
+#include "../src/io_pool.hpp"
+#endif
 
 using namespace netmech;
 using namespace netmech_test;
@@ -263,3 +272,63 @@ NETMECH_TEST(mechanism_keeps_runtime_alive)
     mech.reset();   // 最后一个使用者释放 → 运行时析构（幂等 shutdown）
     CHECK(weak.expired());
 }
+
+// ---------------------------------------------------------------------------
+// 6. 线程创建失败：create(opts, ec) 必须返回 nullptr + ec，而不是死锁
+//
+//    修复前：IoPool::start() 的 catch 块未释放 work_guard、未 stop() 各
+//    context 就直接 join —— 已启动线程的 run() 永不返回，调用线程永久
+//    挂死，ec 重载的失败承诺不可达。这里用故障注入点让第 3 条线程创建
+//    失败（前 2 条已在 run()），钉住"失败可恢复"这条契约。
+//
+//    仅 STATIC 构建：注入点是内部符号，SHARED 不导出（见文件头 include 处）。
+// ---------------------------------------------------------------------------
+#if !defined(NETMECH_SHARED)
+NETMECH_TEST(runtime_create_recovers_from_thread_spawn_failure)
+{
+    // 注入：序号 2（第 3 条）创建时抛异常，模拟线程资源耗尽。
+    IoPool::start_fault_hook = [](std::size_t i) {
+        if (i == 2) {
+            throw std::system_error(
+                std::make_error_code(std::errc::resource_unavailable_try_again));
+        }
+    };
+
+    // 在独立线程里调 create：若回归（死锁），看门狗超时后用例记失败
+    // 而不是整个测试进程挂死；detach 的线程由 OS 在进程退出时回收。
+    std::atomic<bool> finished{false};
+    std::shared_ptr<Runtime> rt;
+    std::error_code ec;
+    std::thread caller([&] {
+        rt = Runtime::create(opts_with_threads(4), ec);
+        finished.store(true, std::memory_order_release);
+    });
+    caller.detach();
+
+    const bool returned = wait_for(
+        [&] { return finished.load(std::memory_order_acquire); }, 5000ms);
+    IoPool::start_fault_hook = nullptr;
+
+    REQUIRE(returned);   // 5s 未返回 ⇒ start() 失败路径死锁回归
+    CHECK(rt == nullptr);
+    CHECK(ec == NetErrc::not_initialized);
+
+    // 补充场景：第一条线程就失败（一条都没起来）同样要干净返回。
+    IoPool::start_fault_hook = [](std::size_t) {
+        throw std::system_error(
+            std::make_error_code(std::errc::resource_unavailable_try_again));
+    };
+    std::error_code ec2;
+    auto rt2 = Runtime::create(opts_with_threads(2), ec2);
+    IoPool::start_fault_hook = nullptr;
+    CHECK(rt2 == nullptr);
+    CHECK(ec2 == NetErrc::not_initialized);
+
+    // 注入点清除后，正常创建不受影响。
+    auto rt3 = Runtime::create(opts_with_threads(1), ec2);
+    REQUIRE(rt3 != nullptr);
+    EXPECT_OK(ec2);
+    CHECK(rt3->running());
+    rt3->shutdown();
+}
+#endif   // !NETMECH_SHARED

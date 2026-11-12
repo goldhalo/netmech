@@ -191,13 +191,22 @@ public:
 
     /// 等待发送真正完成（所有字节移出硬件）。
     ///
-    /// @param[out] ec 失败原因
+    /// 两段式：
+    ///  1. **带超时等待发送队列排空**：所有已受理的写都完成 `on_write`
+    ///     （数据进了内核缓冲）。超时返回 false（`ec` = `timed_out`）；
+    ///  2. 按"自上次 drain 以来受理的字节数 × 每字符位数 / 波特率"估算
+    ///     移出时间并等待（Asio 未暴露 tcdrain / FlushFileBuffers，只能
+    ///     估算；估算偏保守，宁可多等不可截帧）。
+    ///
+    /// @param[out] ec 失败原因（`link_closed` / `timed_out`）
     /// @return true 表示已排空；false 表示失败或超时
     ///
     /// @par 什么时候需要它
     ///  RS-485 半双工：发完必须确认"最后一个字节已从线上发出"才能放开方向控制。
     ///  `on_write` 只代表"进了内核缓冲"，不代表"发出去了"。
     ///
+    /// @note 覆盖范围是"本次 drain 之前受理的写"；要精确请在应用层用平台的
+    ///       `tcdrain` / `FlushFileBuffers`。
     /// @warning **阻塞调用**。不要在 io 线程里调——会卡住整个 io_context。
     ///          正确用法是在独立线程里调，或者在 `on_write` 之后用定时器等一拍。
     bool drain(std::error_code& ec);

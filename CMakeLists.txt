@@ -80,7 +80,8 @@ option(NETMECH_PIC "编译为位置无关代码（静态库要链进 .so 时必�
 # 各有一套 io 线程池，且**跨模块混用同一个 io_context 会崩**（asio 的 per-thread
 # 状态也是每模块一份）。改成 SHARED 后整个进程只有一份代码，问题消失。
 #
-# ⚠ Windows 共享库需要导出宏（NETMECH_API）；当前 Windows 只支持 STATIC。
+# ⚠ Windows 共享库需要导出宏（NETMECH_API）：公共非 inline 函数/类均已标注，
+#   导出面由 test_contracts.cpp 的引用用例 + CI 的 windows-shared job 守着。
 set(NETMECH_LIBRARY_TYPE "STATIC" CACHE STRING "netmech 库类型：STATIC 或 SHARED")
 set_property(CACHE NETMECH_LIBRARY_TYPE PROPERTY STRINGS STATIC SHARED)
 
@@ -217,7 +218,7 @@ set_target_properties(netmech PROPERTIES
 
 target_include_directories(netmech PUBLIC
     $<BUILD_INTERFACE:${NETMECH_INCLUDE_DIR}>
-    $<INSTALL_INTERFACE:include>)
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 if(NOT NETMECH_IS_INTERFACE)
     target_include_directories(netmech PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -260,11 +261,18 @@ if(NETMECH_BUILD_TESTS)
                 WORKING_DIRECTORY "${NETMECH_OUTPUT_DIR}")
 
             # -----------------------------------------------------------------
-            # 多 .so 回归：两个 .so 各自静态链接 netmech（默认运行时 = 各一份
-            # 线程池），宿主创建**一个** Runtime 注入进去，验证它们共用同一套
-            # io 线程（线程数只 +N，而不是 +2N）。这是 Runtime 存在的理由。
+            # 多 .so 回归（SHARED 部署形态）：netmech 以共享库构建，两个
+            # consumer .so 链接**同一份** netmech；宿主创建一个 Runtime，
+            # 经 dlopen + 导出函数注入两个 .so，断言：
+            #   * 两个 .so 看到同一个 Runtime（io_threads 一致）；
+            #   * 各建一个 Mechanism 后进程线程数不增长（共用一套 io 池）。
+            # 这是多 .so 进程"一份代码、一份池"主推部署形态的回归。
+            # （"每个 .so 各静态链一份"的旧注释描述有误：跨静态副本注入
+            #   会在 asio 内部崩溃，见 runtime.hpp，不是本用例的构建形态。）
             #
-            # 仅 Unix：Windows DLL 需要显式导出宏，本用例暂不覆盖。
+            # 仅 UNIX + SHARED 下注册；CI 的 shared job（Linux/gcc/Shared）
+            # 会常规执行它。Windows DLL 形态由 windows-shared job 与
+            # test_contracts 的导出面用例守着。
             # -----------------------------------------------------------------
             if(UNIX AND NETMECH_LIBRARY_TYPE STREQUAL "SHARED")
                 add_library(netmech_multi_so_a SHARED test/multi_so/consumer.cpp)

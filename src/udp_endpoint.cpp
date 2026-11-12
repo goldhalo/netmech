@@ -333,6 +333,11 @@ bool UdpEndpoint::send_to(const Address& dst, ConstBuf buf)
     if (!m_impl || m_impl->closing.load(std::memory_order_acquire)) {
         return false;
     }
+    // 运行时已停：dispatch 出去的任务不会被执行，按"未受理"返回 false。
+    // 否则返回 true 却永不发送 —— 同 TCP listen/connect 与串口读写的口径。
+    if (m_impl->pool != nullptr && !m_impl->pool->running()) {
+        return false;
+    }
     if (buf.data == nullptr || buf.size == 0) {
         return false;
     }
@@ -598,6 +603,13 @@ std::shared_ptr<UdpEndpoint> create_udp_endpoint_impl(asio::io_context&         
         runtime = detail::default_runtime_handle();
     }
     IoPool& pool = detail::runtime_pool(*runtime);
+    // ★ shutdown 之后不再受理：否则端点会"成功"绑定端口，但接收循环投递进
+    //   已停的 io_context 永不执行 —— 端点看起来开着却收不到任何东西，
+    //   是最难查的静默失效（同 Mechanism::listen / connect 的口径）。
+    if (!pool.running()) {
+        ec = make_boost_error_code(NetErrc::not_initialized);
+        return nullptr;
+    }
     auto impl = std::make_shared<UdpEndpoint::Impl>(io, pool, std::move(runtime), cfg);
     impl->handler  = std::move(handler);
     impl->user_ctx = std::move(user_ctx);

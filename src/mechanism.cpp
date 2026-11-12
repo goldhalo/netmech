@@ -331,7 +331,7 @@ Mechanism::~Mechanism()
     //  1. 停止监听器：不再产生新连接。
     //  2. 对每个连接请求 close()：把关闭动作投递到各自的 io_context。
     //  3. 清空监听表 / 连接表：释放本对象持有的 Conn / Acceptor 引用。
-    //  4. 最后析构 io 池（stop → join → 销毁 io_context）。
+    //  4. **不**停 io 池 —— 它是进程级单例，不随 Mechanism 析构而停止（见下）。
     //
     //  ★ 为什么**不需要**"排空 io 队列"这一步：
     //    运行时是**进程级**的（IoPool::global() 是唯一入口），它持有的
@@ -1000,9 +1000,27 @@ std::error_code Mechanism::connect(const Address& remote_addr,
             std::move(op->sock), effective_remote, local_addr, op->linkable, op->user_ctx);
         if (!ep) {
             // ★ 不能只 return：连接对象造不出来（id 耗尽 / 其它创建失败），
-            //   socket 已经被 close，但应用还在等 on_linkfail。
-            //   "失败可观察"是本库的卖点，这条路径上是静默的 —— 补一次通知。
-            finish_connect_fail(op, std::make_error_code(std::errc::resource_unavailable_try_again));
+            //   但应用还在等 on_linkfail。"失败可观察"是本库的卖点。
+            //
+            //   不能走 finish_connect_fail：finished 已在上面的成功占位处
+            //   置 true，它的幂等守卫会立即返回，把通知吞掉（旧实现的 bug）。
+            //   这里直接收尾：关 socket + 恰好一次通知。pending 记录已在
+            //   上面摘除、定时器已 cancel，无需重复。
+            //   （id 耗尽时 make_endpoint 未取走 socket 所有权，它仍开着；
+            //   其它失败路径 socket 已被移走，close_socket_noexcept 幂等安全。）
+            close_socket_noexcept(op->sock);
+            std::shared_ptr<Linkable> lb;
+            try {
+                lb = op->linkable.lock();
+            } catch (...) {
+                lb = std::shared_ptr<Linkable>();
+            }
+            if (lb) {
+                invoke_void([&lb, &op]() {
+                    lb->on_linkfail(detail::from_asio_endpoint(op->remote),
+                                    std::make_error_code(std::errc::resource_unavailable_try_again));
+                });
+            }
             return;
         }
         std::shared_ptr<Conn::Impl> state = ep->m_impl;

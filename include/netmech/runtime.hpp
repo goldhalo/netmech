@@ -56,8 +56,12 @@
 //      // 宿主（exe 或 hub .so）：只建一套线程池，线程数自己定
 //      netmech::Runtime::Options opt;
 //      opt.io_threads = 4;
-//      auto rt = netmech::Runtime::create(opt);
-//      if (!rt) { /* 线程创建失败 */ }
+//      auto rt = netmech::Runtime::create(opt);   // 失败即 terminate，见 create(opts)
+//
+//      // 需要可恢复的失败处理时，用 ec 重载：
+//      // std::error_code ec;
+//      // auto rt = netmech::Runtime::create(opt, ec);
+//      // if (!rt) { /* 线程创建失败，ec 已填，可降级/重试 */ }
 //
 //      // 把同一个 rt 传给各个库（它们内部用 Mechanism::create(cfg, rt) 等）
 //      auto mech = netmech::Mechanism::create(netmech::Mechanism::Config{}, rt);
@@ -109,17 +113,21 @@ public:
     Runtime& operator=(const Runtime&) = delete;
 
     /// 用默认参数（`io_threads = 0`，即 hardware_concurrency）创建运行时。
+    /// 失败语义同 `create(opts)`：启动期致命错误，terminate。
     [[nodiscard]] static std::shared_ptr<Runtime> create();
 
     /// 创建运行时，线程数在此时决定。
     ///
     /// @param[in] opts 参数（见 Options）
-    /// @return 非空；线程创建失败时**抛出** `std::system_error`（与
-    ///         `Mechanism::create()` 的失败语义一致：这类失败无法用
-    ///         error_code 表达得更清楚，继续运行只会得到静默失效）。
+    /// @return 恒非空。线程创建失败属于**启动期致命错误**：向 stderr 打印
+    ///         诊断后 `std::terminate()`（与 `IoPool::global()` 的既有口径
+    ///         一致：没有 io 线程时任何网络对象都无法工作，继续运行只会
+    ///         得到难以定位的静默失效）。**不抛异常**，调用方无需 try/catch。
+    ///         需要可恢复的失败处理请用 `create(opts, ec)` 重载。
     [[nodiscard]] static std::shared_ptr<Runtime> create(const Options& opts);
 
-    /// 同 `create(opts)`，但失败时返回 nullptr 并填 @p ec（不抛异常）。
+    /// 同 `create(opts)`，但失败时返回 nullptr 并填 @p ec
+    /// （不抛异常、**不 terminate**）。线程创建失败时 ec 为 `not_initialized`。
     [[nodiscard]] static std::shared_ptr<Runtime> create(const Options& opts,
                                                          std::error_code& ec) noexcept;
 
@@ -160,6 +168,6 @@ private:
 /// @note 线程数由 `netmech::initialize(n)` 决定；没调用过 initialize 时为
 ///       `max(1, hardware_concurrency())`。首次调用本函数时才真正建线程池。
 /// @note 返回的引用在进程生命周期内一直有效。
-[[nodiscard]] Runtime& default_runtime();
+[[nodiscard]] NETMECH_API Runtime& default_runtime();
 
 } // namespace netmech

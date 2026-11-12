@@ -17,6 +17,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <vector>
@@ -26,6 +27,12 @@
 #include <system_error>
 
 #include "test_framework.hpp"
+
+// 内部头：只为取 IdRegistry::test_set_counter（id 耗尽的测试注入点）。
+// SHARED 构建下内部符号不导出，注入用例只在 STATIC 构建下编译。
+#if !defined(NETMECH_SHARED)
+#include "../src/registry.hpp"
+#endif
 
 using namespace netmech;
 using namespace netmech_test;
@@ -337,3 +344,63 @@ NETMECH_TEST(regress_no_handler_leak_across_cycles)
 
     CHECK_MSG(all_released, "有 handler 在 Mechanism 销毁后仍未释放");
 }
+
+// ---------------------------------------------------------------------------
+// 5. connect 成功但端点创建失败（id 耗尽）：on_linkfail 仍必须恰好一次
+//
+//    修复前：成功回调先把 finished 置 true 占位，make_endpoint 返回空时
+//    调 finish_connect_fail "补通知"，但后者的幂等守卫
+//    `if (finished.exchange(true)) return;` 立即短路 —— on_linkup /
+//    on_linkfail 都不发出，违反"失败可观察"。用 IdRegistry 的测试注入点
+//    制造 id 耗尽（仅 STATIC 构建），用例结束立即恢复计数器。
+// ---------------------------------------------------------------------------
+#if !defined(NETMECH_SHARED)
+NETMECH_TEST(regress_connect_notifies_linkfail_when_endpoint_creation_fails)
+{
+    auto mech = Mechanism::create();
+    REQUIRE(mech != nullptr);
+
+    auto srv = std::make_shared<QuietServer>();
+    REQUIRE(!mech->listen(Address("127.0.0.1", 0), std::weak_ptr<Linkable>(srv), 8));
+    const auto bound = mech->local_address_of(Address("127.0.0.1", 0));
+    REQUIRE(bound.has_value());
+
+    class FailWatch final : public Linkable {
+    public:
+        std::shared_ptr<ConnHandler> on_linkup(Conn&) override
+        {
+            linkup.fetch_add(1);
+            return std::make_shared<QuietHandler>();
+        }
+        void on_linkfail(const Address&, std::error_code ec) override
+        {
+            fail_ec.store(ec.value());
+            linkfail.fetch_add(1);
+        }
+        std::atomic<int> linkup{0};
+        std::atomic<int> linkfail{0};
+        std::atomic<int> fail_ec{0};
+    };
+    auto cli = std::make_shared<FailWatch>();
+
+    // 耗尽 id 空间：make_endpoint 必然返回空。
+    // 窗口期内服务端 accept 同样分配不到 id，由 Acceptor 关 socket 兑底，
+    // 不影响客户端侧的失败通知。
+    const auto saved = detail::IdRegistry::test_set_counter(
+        std::numeric_limits<endpoint_id_t>::max());
+    const std::error_code ec = mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000);
+    CHECK(!ec);   // connect 本身受理成功，失败在完成回调里
+
+    const bool notified = wait_until([&] { return cli->linkfail.load() >= 1; }, 3000ms);
+    // 无论成败立即恢复，不影响后续用例的 id 分配
+    detail::IdRegistry::test_set_counter(saved);
+
+    REQUIRE(notified);   // 修复前：被幂等守卫吞掉，永远等不到
+    CHECK_EQ(cli->linkup.load(), 0);
+    CHECK_EQ(cli->fail_ec.load(),
+             static_cast<int>(std::errc::resource_unavailable_try_again));
+
+    mech->close_all();
+    mech.reset();
+}
+#endif   // !NETMECH_SHARED

@@ -551,11 +551,11 @@ private:
 
     explicit UdpEndpoint(std::shared_ptr<Impl> impl);
 
-    friend std::shared_ptr<UdpEndpoint>
+    friend NETMECH_API std::shared_ptr<UdpEndpoint>
     create_udp_endpoint(const UdpConfig&, std::shared_ptr<UdpHandler>,
                         std::shared_ptr<void>, std::error_code&);
 
-    friend std::shared_ptr<UdpEndpoint>
+    friend NETMECH_API std::shared_ptr<UdpEndpoint>
     create_udp_endpoint_on(const UdpEndpoint&, const UdpConfig&,
                            std::shared_ptr<UdpHandler>,
                            std::shared_ptr<void>, std::error_code&);
@@ -586,7 +586,7 @@ private:
 ///
 /// @note 一个进程可以创建任意多个端点（SIP 5060 + RTP 10000~20000 几十上百个都正常），
 ///       它们共享 `netmech::initialize()` 建立的 io 线程池。
-[[nodiscard]] std::shared_ptr<UdpEndpoint>
+[[nodiscard]] NETMECH_API std::shared_ptr<UdpEndpoint>
 create_udp_endpoint(const UdpConfig&          cfg,
                     std::shared_ptr<UdpHandler> handler,
                     std::shared_ptr<void>     user_ctx,

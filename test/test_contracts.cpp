@@ -255,3 +255,33 @@ NETMECH_TEST(contract_close_returns_inflight_read_and_notifies_once)
     cli->close_all();
     srv->close_all();
 }
+
+// ---------------------------------------------------------------------------
+// 导出面回归：公共非 inline 函数必须都带 NETMECH_API
+//
+//    Windows SHARED（DLL）构建下，缺导出宏会在本测试程序的**链接期**
+//    报 LNK2019（下游 DLL 使用方同样会撞）；静态 / Linux 构建下本用例
+//    验证行为正确。历史上 net_errc_message / from_boost_error_code /
+//    default_runtime / stats 四件套都曾漏标，这里把它们各引用一遍钉住。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(contract_public_free_functions_are_exported)
+{
+    // common.hpp
+    CHECK(!net_errc_message(static_cast<int>(NetErrc::link_closed)).empty());
+    const auto mapped = from_boost_error_code(make_boost_error_code(NetErrc::buffer_full));
+    REQUIRE(mapped.has_value());
+    CHECK(*mapped == NetErrc::buffer_full);
+    CHECK(!from_boost_error_code(std::error_code{}).has_value());
+
+    // runtime.hpp
+    Runtime& rt = default_runtime();
+    CHECK(rt.running());
+
+    // stats.hpp（只验证开关与可调用；累计值受其它 io 线程影响，不做数值断言）
+    set_io_stats_enabled(true);
+    CHECK(io_stats_enabled());
+    (void)collect_io_stats();
+    reset_io_stats();
+    set_io_stats_enabled(false);
+    CHECK(!io_stats_enabled());
+}

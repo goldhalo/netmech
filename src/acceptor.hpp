@@ -78,7 +78,8 @@ public:
     /// 绑定并开始监听（同步完成 bind+listen，异步仅 accept 循环）。
     ///
     /// @param[in] local   本地地址。
-    /// @param[in] backlog listen 队列长度；0 归一化为 SOMAXCONN。
+    /// @param[in] backlog listen 队列长度；0 归一化为 128（与公共头
+    ///                    kDefaultBacklog 一致；刻意不用 SOMAXCONN，理由见 mechanism.hpp）。
     /// @return 成功返回值初始化的 error_code（判假）；失败返回具体错误。
     /// @note 重复调用返回 `already_initialized`。
     error_code_t open(const endpoint_t& local, std::uint32_t backlog);

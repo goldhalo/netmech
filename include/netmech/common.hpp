@@ -238,7 +238,7 @@ NETMECH_API const std::error_category& net_boost_category() noexcept;
 /// @param[in] ev 错误码的整数值（即 `static_cast<int>(NetErrc::xxx)`）。
 /// @return 非空的描述字符串；未知值返回 "unknown net error"。
 /// @note 线程安全、noexcept。
-std::string net_errc_message(int ev) noexcept;
+NETMECH_API std::string net_errc_message(int ev) noexcept;
 
 // -----------------------------------------------------------------------------
 // 构造 std::error_code
@@ -299,7 +299,7 @@ inline std::error_code make_boost_error_code(NetErrc e) noexcept
 ///         **注意**：`ec` 为假时**不返回** `NetErrc::ok`，以免混淆"无错误"与
 ///         "未知错误"两种情形。
 /// @note 线程安全、noexcept。
-[[nodiscard]] std::optional<NetErrc> from_boost_error_code(
+[[nodiscard]] NETMECH_API std::optional<NetErrc> from_boost_error_code(
     const std::error_code& ec) noexcept;
 
 } // namespace netmech

@@ -7,6 +7,8 @@
 // =============================================================================
 #pragma once
 
+#include "netmech/export.hpp"
+
 #include <cstdint>
 
 namespace netmech {
@@ -21,13 +23,13 @@ struct IoStats {
 };
 
 /// 是否开启采集（默认 false）。可运行时切换。
-void set_io_stats_enabled(bool on) noexcept;
-bool io_stats_enabled() noexcept;
+NETMECH_API void set_io_stats_enabled(bool on) noexcept;
+NETMECH_API bool io_stats_enabled() noexcept;
 
 /// 读取累计值（不重置）。
-[[nodiscard]] IoStats collect_io_stats() noexcept;
+[[nodiscard]] NETMECH_API IoStats collect_io_stats() noexcept;
 
 /// 清零累计值。
-void reset_io_stats() noexcept;
+NETMECH_API void reset_io_stats() noexcept;
 
 } // namespace netmech

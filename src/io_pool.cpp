@@ -120,6 +120,10 @@ IoPool::IoPool(std::size_t threads)
     size_ = normalize_threads(threads);
 }
 
+// 测试故障注入点（语义见 io_pool.hpp 的声明处）。默认 nullptr：
+// 生产路径只在启动期每条线程多做一次空指针检查，可忽略。
+void (*IoPool::start_fault_hook)(std::size_t) = nullptr;
+
 bool IoPool::start(std::size_t request_threads)
 {
     try {
@@ -144,6 +148,11 @@ bool IoPool::start(std::size_t request_threads)
         running_.store(true, std::memory_order_release);
 
         for (std::size_t i = 0; i < request_threads; ++i) {
+            // 测试注入点：抛异常即模拟"第 i 条线程创建失败"，
+            // 走下面的 catch 回收路径（见 io_pool.hpp 的说明）。
+            if (start_fault_hook != nullptr) {
+                start_fault_hook(i);
+            }
             io_context_t* const ctx = contexts_[i].get();
             // 线程函数只捕获裸指针：io_context 的存活由本对象（shared_ptr 链）保证。
             // 本类析构保证 join 之后才销毁 contexts_，故无悬垂。
@@ -161,12 +170,24 @@ bool IoPool::start(std::size_t request_threads)
         return true;
     } catch (...) {
         // 线程创建失败：回收已创建的线程，避免泄漏。
+        //
+        // ★ 顺序必须与 join_threads()/析构一致：先释放 work_guard、再 stop()
+        //   各 io_context，**最后**才 join。旧实现漏了前两步 —— work_guard
+        //   存活时 run() 永不返回，join 永久阻塞，调用线程直接挂死，
+        //   Runtime::create(opts, ec) 的"失败返回 nullptr + ec"承诺不可达。
         running_.store(false, std::memory_order_release);
         std::vector<std::thread> threads;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             threads.swap(threads_);
+            guards_.clear();
+            for (const auto& ctx : contexts_) {
+                if (ctx) {
+                    ctx->stop();
+                }
+            }
         }
+        // join 全程不持锁（B-02 的教训：持锁 join 会与取池锁的回调死锁）。
         for (auto& th : threads) {
             if (th.joinable()) {
                 th.join();

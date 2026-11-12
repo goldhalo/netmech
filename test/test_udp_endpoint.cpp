@@ -221,3 +221,46 @@ NETMECH_TEST(udp_close_stops_delivery)
 
     tx->close();
 }
+
+// ---------------------------------------------------------------------------
+// 4. 运行时 shutdown 后：工厂拒绝 + send_to 不再受理
+//
+//    修复前：UDP 工厂与 send_to 不查 pool->running()，shutdown 后创建端点
+//    仍"成功"绑端口，但接收循环投递进已停的 context 永不执行（端点"聋"），
+//    send_to 返回 true 却永不发送 —— 正是 common.hpp 声称已消灭的静默失效。
+//    TCP listen/connect 与串口早有此检查，UDP 漏了。用注入的 Runtime 验证，
+//    避免污染进程级默认池（后续用例还要用）。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(udp_after_runtime_shutdown_is_rejected)
+{
+    Runtime::Options opt;
+    opt.io_threads = 1;
+    auto rt = Runtime::create(opt);
+    REQUIRE(rt != nullptr);
+
+    UdpConfig cfg;
+    cfg.bind = Address("127.0.0.1", 0);
+
+    std::error_code ec;
+    auto ep = create_udp_endpoint(cfg, std::make_shared<PacketSink>(), nullptr, rt, ec);
+    REQUIRE(!ec);
+    REQUIRE(ep != nullptr);
+
+    rt->shutdown();
+
+    // 已有端点：send_to 返回 false（未受理），而不是"true 却永不发送"
+    const char payload[] = "x";
+    CHECK(!ep->send_to(Address("127.0.0.1", 9), {nullptr, payload, 1}));
+
+    // 新端点：工厂拒绝，not_initialized（与 TCP listen/connect 口径一致）
+    auto ep2 = create_udp_endpoint(cfg, std::make_shared<PacketSink>(), nullptr, rt, ec);
+    CHECK(ep2 == nullptr);
+    CHECK(ec == NetErrc::not_initialized);
+
+    // create_udp_endpoint_on 跟随 anchor 的运行时，同样应被拒
+    auto ep3 = create_udp_endpoint_on(*ep, cfg, std::make_shared<PacketSink>(), nullptr, ec);
+    CHECK(ep3 == nullptr);
+    CHECK(ec == NetErrc::not_initialized);
+
+    ep->close();
+}

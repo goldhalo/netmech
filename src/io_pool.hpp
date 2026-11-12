@@ -242,6 +242,16 @@ public:
     /// @note join 之后运行时**不可复活**（不支持重新 initialize）。
     void join_threads() noexcept;
 
+    /// 测试故障注入点（**仅供单元测试**，生产代码不得设置）。
+    ///
+    /// start() 在创建第 i 条 io 线程**之前**调用它（i 从 0 起）；
+    /// 抛异常即模拟"第 i 条线程创建失败"，用于回归 start() 的失败
+    /// 回收路径：必须先释放 work_guard + stop() 各 context 再 join，
+    /// 否则 run() 永不返回、join 永久死锁（见 test_runtime.cpp 的
+    /// runtime_create_recovers_from_thread_spawn_failure）。
+    /// 默认 nullptr：启动期每条线程一次空指针检查，开销可忽略。
+    static void (*start_fault_hook)(std::size_t);
+
     friend class Runtime;   // Runtime::create() 需要构造 IoPool 并 start()
 
 protected:

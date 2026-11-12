@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -182,4 +183,40 @@ NETMECH_TEST(worker_pool_default_threads)
     REQUIRE(pool != nullptr);
     CHECK(pool->thread_count() >= 1u);
     pool->stop();
+}
+
+// ---------------------------------------------------------------------------
+// 7. 任务抛异常：防火墙不得终止池，计数配平
+//
+//    修复前：job() 裸调，异常穿过线程函数 → std::terminate，且 pending
+//    不回退。修复后：与 io 回调（invoke_void）同口径，抛异常的任务
+//    也计入 completed，后续任务照常。用单线程池：异常若穿透，该线程
+//    死亡，后续任务永不执行 —— 回归时这里会稳定超时失败。
+// ---------------------------------------------------------------------------
+NETMECH_TEST(worker_pool_survives_throwing_job)
+{
+    std::error_code ec;
+    WorkerPool::Config cfg;
+    cfg.threads = 1;
+    auto pool = WorkerPool::create(cfg, ec);
+    REQUIRE(pool != nullptr);
+
+    std::atomic<int> done{0};
+    REQUIRE(pool->post([] { throw std::runtime_error("boom"); }));
+    REQUIRE(pool->post([&done] { done.fetch_add(1); }));
+    REQUIRE(pool->post([&done] { done.fetch_add(1); }));
+
+    CHECK(wait_for(done, 2));
+    CHECK(pool->running());
+
+    // completed 的自增在 job() 返回之后，等它配平再断言（避免竞态）
+    const auto deadline = std::chrono::steady_clock::now() + 3000ms;
+    while (pool->completed() < 3 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+    CHECK_EQ(pool->completed(), 3u);   // 抛异常的那笔也计入
+    CHECK_EQ(pool->pending(), 0u);
+
+    pool->stop();
+    CHECK(!pool->running());
 }

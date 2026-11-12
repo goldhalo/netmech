@@ -90,7 +90,16 @@ public:
                 queues[idx].pop_front();
             }
             if (job) {
-                job();
+                // ★ 异常防火墙：与库内 io 回调（invoke_void）同一口径 ——
+                //   用户任务的异常绝不允许穿过线程函数（否则 std::terminate），
+                //   也不影响后续任务。计数照常配平：抛异常的任务同样被
+                //   消费了，计入 completed（旧实现裸调 job()，异常逃逸且
+                //   pending 不回退）。
+                try {
+                    job();
+                } catch (...) {
+                    // 有意为之：异常绝不逃逸业务线程。
+                }
                 pending.fetch_sub(1, std::memory_order_relaxed);
                 completed.fetch_add(1, std::memory_order_relaxed);
             }
