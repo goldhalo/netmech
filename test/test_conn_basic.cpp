@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <functional>
@@ -332,6 +333,104 @@ NETMECH_TEST(mechanism_write_and_close_by_id)
     CHECK(mech->close(cid));
     CHECK(wait_until([&] { return cli->last.get()->closed.load() == 1; }, 3000ms));
     CHECK(!mech->write(cid, {nullptr, "x", 1}));
+
+    mech->close_all();
+    mech.reset();
+}
+
+// ---------------------------------------------------------------------------
+// 6. Conn::post：投递到本连接的 io 线程（上层状态机单线程化用）
+// ---------------------------------------------------------------------------
+NETMECH_TEST(conn_post_runs_on_io_thread)
+{
+    // 服务端 handler：记录 io 线程 id，支持 inline 探测
+    struct Srv : ConnHandler {
+        std::shared_ptr<Conn> ep;
+        std::thread::id       io_tid;
+        std::atomic<int>      opened{0};
+        std::atomic<int>      inline_ran{0};
+        std::array<std::uint8_t, 64> rx{};
+
+        bool on_open(std::shared_ptr<Conn> c) override
+        {
+            ep = c;
+            io_tid = std::this_thread::get_id();
+            opened.store(1);
+            return c->read({nullptr, rx.data(), rx.size()});
+        }
+        void on_read(std::error_code ec, Buf, std::size_t) override
+        {
+            if (ec) {
+                return;
+            }
+            // io 线程上 allow_inline=true 应当同步执行
+            bool ran = false;
+            ep->post([&ran] { ran = true; }, /*allow_inline=*/true);
+            if (ran) {
+                inline_ran.fetch_add(1);
+            }
+            (void)ep->read({nullptr, rx.data(), rx.size()});
+        }
+        void on_write(std::error_code, ConstBuf, std::size_t) override {}
+        void on_close() override {}
+    };
+    struct SrvLink : Linkable {
+        netmech_test::SyncSlot<Srv> last;
+        std::shared_ptr<ConnHandler> on_accept(Conn&) override
+        {
+            auto h = std::make_shared<Srv>();
+            last.set(h);
+            return h;
+        }
+    };
+
+    auto mech = Mechanism::create();
+    REQUIRE(mech != nullptr);
+    auto srv = std::make_shared<SrvLink>();
+    const Address wild("127.0.0.1", 0);
+    REQUIRE(!mech->listen(wild, std::weak_ptr<Linkable>(srv)));
+    const auto bound = mech->local_address_of(wild);
+    REQUIRE(bound.has_value());
+    auto cli = std::make_shared<ClientLinkable>();
+    REQUIRE(!mech->connect(*bound, std::weak_ptr<Linkable>(cli), 3000));
+    REQUIRE(wait_until([&] { return srv->last.ready() && srv->last.get()->opened.load() == 1; }, 3000ms));
+    REQUIRE(wait_until([&] { return cli->last.ready() && cli->last.get()->opened.load() == 1; }, 3000ms));
+    auto h = srv->last.get();
+
+    // 1) 主线程 post → 在 io 线程执行
+    std::atomic<bool> ran{false};
+    std::thread::id   ran_tid;
+    h->ep->post([&] {
+        ran_tid = std::this_thread::get_id();
+        ran.store(true);
+    });
+    REQUIRE(wait_until([&] { return ran.load(); }, 3000ms));
+    CHECK(ran_tid == h->io_tid);
+
+    // 2) allow_inline=false 严格 FIFO
+    std::atomic<int>  next{0};
+    std::atomic<bool> order_ok{true};
+    for (int i = 0; i < 100; ++i) {
+        h->ep->post([&, i] {
+            if (next.fetch_add(1) != i) {
+                order_ok.store(false);
+            }
+        }, /*allow_inline=*/false);
+    }
+    REQUIRE(wait_until([&] { return next.load() == 100; }, 3000ms));
+    CHECK(order_ok.load());
+
+    // 3) io 回调里 allow_inline=true 同步执行（发个包触发 on_read）
+    const char ping[] = "x";
+    REQUIRE(cli->last.get()->m_ep->write({nullptr, ping, 1}));
+    REQUIRE(wait_until([&] { return h->inline_ran.load() >= 1; }, 3000ms));
+
+    // 4) 任务抛异常由库兜底，后续任务照常、连接不受影响
+    std::atomic<bool> after{false};
+    h->ep->post([] { throw std::runtime_error("boom"); });
+    h->ep->post([&] { after.store(true); });
+    REQUIRE(wait_until([&] { return after.load(); }, 3000ms));
+    CHECK(h->ep->is_open());
 
     mech->close_all();
     mech.reset();

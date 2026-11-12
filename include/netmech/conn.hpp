@@ -282,6 +282,26 @@ public:
     /// @note 线程安全（内部为 atomic 读取）、noexcept。
     bool is_open() const noexcept;
 
+    /// 把一段工作投递到**本连接的 io 线程**执行。
+    ///
+    /// @par 为什么需要它
+    ///  连接内部的一切状态都只在该 io 线程上碰才是安全的。上层的会话
+    ///  状态机也一样：如果公开 API 允许从任意线程调用，最省事的做法就是
+    ///  先 `post()` 过来，然后在 io 线程上无锁地处理，而不是给每个成员
+    ///  加一把互斥量（与 `UdpEndpoint::post` 同一套语义）。
+    ///
+    /// @par 语义（dispatch）
+    ///  - `allow_inline=true`（默认）：已在本连接的 io 线程上 ⇒ **同步执行**，
+    ///    没有排队开销；其它线程 ⇒ 排队执行。从网络回调里调用不会多一次跳转。
+    ///  - `allow_inline=false`：一律排队，严格 FIFO。**关闭这类必须排在
+    ///    已有工作之后的动作请传 false** —— 否则从 io 线程内部调用时会插到
+    ///    已排队的发送前面，把没发出去的数据连带资源一起丢掉。
+    ///
+    /// @note 连接已关闭时仍然会执行（io 线程还活着），由调用方自己判断要不要干活。
+    /// @note 任务抛异常由库兜底（与 io 回调同一口径）：不会 terminate。
+    /// @note 线程安全、noexcept。
+    void post(std::function<void()> fn, bool allow_inline = true) noexcept;
+
     /// 已受理的写请求笔数（每笔对应恰好一次 `on_write`）。诊断用。
     ///
     /// @note 与 `write_batches()` 一起看：`write_requests / write_batches`

@@ -1114,6 +1114,33 @@ bool Conn::is_open() const noexcept
     return m_impl && !m_impl->closing.load(std::memory_order_acquire);
 }
 
+void Conn::post(std::function<void()> fn, bool allow_inline) noexcept
+{
+    if (!m_impl || !fn) {
+        return;
+    }
+    auto self = m_impl;   // 持住 Impl：fn 执行前连接不会被回收
+    // 与 UdpEndpoint::post 同一套语义：dispatch 在 io 线程上同步执行，
+    // 否则排队。任务异常在这里兜底（V1：绝不逃逸到 io_context）。
+    if (allow_inline) {
+        asio::dispatch(self->socket.get_executor(),
+                       [self, fn = std::move(fn)]() mutable {
+                           try {
+                               fn();
+                           } catch (...) {
+                           }
+                       });
+    } else {
+        asio::post(self->socket.get_executor(),
+                   [self, fn = std::move(fn)]() mutable {
+                       try {
+                           fn();
+                       } catch (...) {
+                       }
+                   });
+    }
+}
+
 std::uint64_t Conn::write_requests() const noexcept
 {
     return m_impl ? m_impl->write_requests.load(std::memory_order_relaxed) : 0;
