@@ -312,8 +312,9 @@ jobs:
           $code = $LASTEXITCODE
           Write-Host $out
           if ($code -ne 0) {
-            $line = ($out -split "`r?`n" | Where-Object { $_ -match 'error C|error LNK|: fatal|error MSB' } |
-                     Select-Object -First 2) -join ' | '
+            # 把 warning Cxxxx 也带上：/WX 下真正的元凶往往是上一行的 warning
+            $line = ($out -split "`r?`n" | Where-Object { $_ -match 'warning C\d|error C\d|error LNK|error MSB|: fatal' } |
+                     Select-Object -First 3) -join ' | '
             Write-Host "::error title=TLS 构建失败::$line"
             exit 1
           }
