@@ -29,7 +29,17 @@
 
 #if defined(NETMECH_HAS_TLS)
 
-#    include <asio/ssl.hpp>
+// ★ 只引需要的 asio ssl 头，**不要**用 <asio/ssl.hpp> 那个总入口。
+//   总入口会连带编译 rfc2818_verification.hpp → .ipp，而那段代码直接摸
+//   `ASN1_STRING` 的内部成员（`asn1_string_st`）。较新的 OpenSSL（如 3.5）
+//   的 <openssl/x509.h> 不再传递包含 <openssl/asn1.h>，于是 MSVC 直接报
+//     error C2027: use of undefined type 'asn1_string_st'
+//   （GitHub windows runner 上真实踩过；本机 OpenSSL 3.0.15 碰巧还能编过）。
+//   我们本来也不用 rfc2818 那套校验 —— 主机名是拿 X509_check_host 自己做的。
+#    include <asio/ssl/context.hpp>
+#    include <asio/ssl/error.hpp>
+#    include <asio/ssl/stream.hpp>
+#    include <asio/ssl/verify_mode.hpp>
 
 #    include <openssl/ssl.h>
 #    include <openssl/x509.h>
