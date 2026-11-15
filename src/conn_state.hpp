@@ -46,6 +46,7 @@
 #include "io_pool.hpp"
 #include "netmech/iohandler.hpp"
 #include "netmech/linkable.hpp"
+#include "transport.hpp"
 
 #include "registry.hpp"
 
@@ -225,7 +226,7 @@ struct Conn::Impl : public std::enable_shared_from_this<Conn::Impl> {
     /// @param[in] owner_in 公共对象的弱引用（构造时通常为空，由工厂在
     ///                     shared_ptr 就绪后回填；此处保留形参以保证声明与
     ///                     定义参数列表严格一致）。
-    Impl(socket_t&& sock,
+    Impl(TransportPtr&& tr,
          io_context_t& ioc,
          IoPool& pool_in,
          std::weak_ptr<Conn> owner_in,
@@ -292,6 +293,34 @@ struct Conn::Impl : public std::enable_shared_from_this<Conn::Impl> {
     void do_close(const error_code_t& reason) noexcept;
     void fail_connection(const error_code_t& ec) noexcept;
 
+    // ---- 接管（握手 + 交棒）----
+    //
+    //  调用时机：Conn 已创建并登记，接管流程已经投递到本连接的 io 线程。
+    //  明文：同步调用 @p ready（与 0.90 完全一致，不额外投递）。
+    //  TLS ：先做握手（带超时 + 并发上限），成功后才调用 @p ready。
+    //
+    //  为什么要插在 ready 之前：on_accept / on_linkup 的语义是"这条连接
+    //  可以开始收发业务数据了"。TLS 下握手没完成就交出去，业务会读到
+    //  握手记录，且失败也无法归因。
+    void establish(std::function<void()> ready);
+
+    /// 握手完成（io 线程内，恰好一次）。
+    void on_handshake_done(const error_code_t& ec, std::function<void()> ready);
+
+    /// 握手超时（io 线程内）。
+    void on_handshake_timeout();
+
+    /// 握手/接管失败：按角色通知用户，然后关闭。
+    ///
+    ///  - 服务端 → `Linkable::on_accept_failed(remote, ec)`
+    ///  - 客户端 → `Linkable::on_linkfail(remote, ec)`
+    ///
+    /// @note 两侧都不会投递 on_linkdown（连接从未交给业务）。
+    void fail_establish(const error_code_t& ec);
+
+    /// 释放握手并发配额（幂等）。
+    void release_handshake_slot() noexcept;
+
     /// 请求关闭：把 do_close 投递到该连接的 io_context（任意线程，幂等）。
     void request_close(const error_code_t& reason) noexcept;
 
@@ -316,19 +345,25 @@ struct Conn::Impl : public std::enable_shared_from_this<Conn::Impl> {
     // ---- 静态/不可变 ----
     //
     // ★ 成员声明顺序 = 初始化顺序；**析构顺序相反**。这里的顺序是刻意安排的：
-    //   1. `pool`  必须声明在 `socket` **之前**，因此**最后**析构；
-    //   2. `socket` 在 `pool` 之后声明，因此**先**析构。
+    //   1. `pool` 必须声明在 `transport` **之前**，因此**最后**析构；
+    //   2. `transport` 在 `pool` 之后声明，因此**先**析构。
     //
-    //   为什么关键：`socket` 的析构会访问它所属的 io_context。
-    //   若 `pool` 先析构（io_context 随之销毁），随后 `socket` 再析构，就会
-    //   访问**已销毁的 io_context** → 退出期 0xC0000005。
+    //   为什么关键：`transport`（内部的 socket / ssl::stream）的析构会访问
+    //   它所属的 io_context。若 `pool` 先析构（io_context 随之销毁），随后
+    //   `transport` 再析构，就会访问**已销毁的 io_context** → 退出期 0xC0000005。
     //
     //   `pool` 是**裸指针**（不是 shared_ptr）：池是进程级单例、永不销毁，
     //   所以"强引用"在这里指的是"它一定活着"，而不是引用计数 —— 这也正是
     //   能在 `~Conn` 里安全访问 io_context 的前提。
 
     IoPool*                        pool = nullptr; ///< 进程级单例，永不为空
-    socket_t                       socket;
+
+    /// 传输层：明文 TCP 或 TLS over TCP（v0.91 起取代了裸 socket 成员）。
+    ///
+    /// @note 声明在 `pool` 之后 = 先于 `pool` 析构（见上面的顺序说明）。
+    /// @note Conn 对它只有三个要求：异步读、异步写、关闭（见 transport.hpp）。
+    TransportPtr                   transport;
+
     // ⚠ 无 strand：依赖 1 io_context = 1 线程（见 io_pool.cpp 末尾说明）
     const endpoint_id_t            id;
 
@@ -414,7 +449,25 @@ struct Conn::Impl : public std::enable_shared_from_this<Conn::Impl> {
     std::size_t                    reserved_bytes = 0; ///< 已受理未完成字节
     std::size_t                    reserved_count = 0; ///< 已受理未完成请求数
 
+    // ---- 握手（仅 TLS；明文下 handshake_active 恒为 false）----
+    //
+    //  这些成员只在**该连接的 io 线程**内读写（establish 由接管任务调用，
+    //  on_handshake_done / timeout 也在同一线程），因此无需原子量。
+    //
+    //  `handshake_slot_held` 记录是否占用了"并发握手"配额：配额由 Mechanism
+    //  注入（acquire/release 两个钩子），用于把"握手风暴"挡在门外 ——
+    //  RSA/ECDSA 握手是 CPU 密集操作，而本库每个 io_context 只有 1 条线程，
+    //  握手突发会把同 context 上其它连接的读写一起拖住。
+    bool                           server_side = false;        ///< 服务端/客户端（决定失败回调）
+    std::uint32_t                  handshake_timeout_ms = 0;   ///< 0 = 不设超时
+    bool                           handshake_active = false;   ///< 握手进行中（io 线程内）
+    bool                           handshake_slot_held = false;
+    std::function<bool()>          acquire_handshake_slot_hook;   ///< 取配额（false = 拒绝）
+    std::function<void()>          release_handshake_slot_hook;   ///< 归还配额（幂等）
+
     // ---- 保活 ----
+    //  说明：`hs_timer` 声明在 `recv_ka` 之前，构造顺序即初始化列表顺序。
+    timer_t                        hs_timer;
     RecvKeepAlive                  recv_ka;
     SendKeepAlive                  send_ka;
 

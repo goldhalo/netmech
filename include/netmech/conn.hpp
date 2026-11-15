@@ -272,6 +272,15 @@ public:
     ///  - noexcept，绝无异常。底层 shutdown/close 的错误被忽略。
     ///
     /// @note 从 on_linkdown 里再次调用 close() 是无害的（幂等）。
+    ///
+    /// @par TLS 连接的关闭（v0.91）
+    ///  - 本函数**同步、不阻塞**，而 TLS 的优雅关闭需要等待对端的
+    ///    `close_notify`（恶意对端可以永不回应）。因此实现只做一次
+    ///    **非阻塞** `SSL_shutdown`（尽力把 close_notify 发出去）随即关闭，
+    ///    对端可能观察到 truncation；
+    ///  - 因此**不要**用"对端有没有收到 close_notify"来判断关闭是否成功；
+    ///  - 反过来，本端**读到**不带 `close_notify` 的 EOF 时会被映射成
+    ///    `NetErrc::tls_truncated`，不会静默当普通 EOF 处理（防截断）。
     void close() noexcept;
 
     /// 连接是否仍然打开。

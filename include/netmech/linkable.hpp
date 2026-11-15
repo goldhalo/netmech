@@ -99,6 +99,26 @@ public:
         return nullptr;
     }
 
+    /// 服务端接受了一条连接，但**接管前的协议协商失败**（v0.91 起：TLS 握手）。
+    ///
+    /// 典型原因：对端不是 TLS 客户端（明文探测）、证书被拒绝、
+    /// 握手超时、并发握手配额已满。此时：
+    ///  - **不会**有对应的 `on_accept`，也**不会**有 `on_linkdown`
+    ///    （这条连接从未交给业务）；
+    ///  - 连接已被库关闭，无需调用方清理。
+    ///
+    /// @param[in] remote 对端地址（直连地址，未经代理）。
+    /// @param[in] ec     失败原因，可用 `from_boost_error_code(ec)` 归类。
+    ///
+    /// @note 默认实现为空。强烈建议至少接上计数/日志 —— 否则"TLS 服务端
+    ///       一个连接都收不到"这件事在业务侧是完全静默的。
+    /// @note 在发起/接受该连接的那个 io 线程上执行。
+    virtual void on_accept_failed(const Address& remote, std::error_code ec)
+    {
+        (void)remote;
+        (void)ec;
+    }
+
     /// 客户端连接建立成功（connect 完成、握手无需额外步骤）时的回调。
     ///
     /// @param[in] c  已连接的 Conn（借用引用，语义同 on_accept）。

@@ -17,8 +17,8 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(netmech
-        VERSION 0.9.0
-        DESCRIPTION "netmech network library (standalone asio, C++17)"
+        VERSION 0.91.0
+        DESCRIPTION "netmech network library (standalone asio, C++17, optional TLS)"
         LANGUAGES CXX)
 
 # ---------------------------------------------------------------------------
@@ -61,6 +61,47 @@ option(NETMECH_BUILD_TESTS    "构建 netmech 单元测试" ON)
 option(NETMECH_BUILD_EXAMPLES "构建 netmech 示例（echo server/client）" ON)
 option(NETMECH_BUILD_BENCH    "构建 netmech 性能基准（默认 OFF）" OFF)
 option(NETMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用，默认 OFF）" OFF)
+
+# ---------------------------------------------------------------------------
+# TLS（v0.91）：进程内 TLS 终结。
+#
+# ★ 默认 **OFF**：不显式要求就不编 TLS。默认构建的产物、依赖、体积与
+#   0.90 完全一致（零第三方依赖）；`listen()/connect()` 传 `tls` 选项会得到
+#   `NetErrc::tls_unsupported`（不是静默降级成明文）。
+#
+# ★ **只有一条路**：用系统 / 自备的 OpenSSL（find_package）。
+#    Windows 与 Linux 行为**完全一致** —— 谁要 TLS，谁先把 OpenSSL 装好
+#    （或用 -DOPENSSL_ROOT_DIR 指定），没有任何"仓内自带"的第二条路径。
+#
+#    曾经考虑过"把 OpenSSL 放 thirdparty、静态链进 netmech"以便发布单文件，
+#    但它会带来两个平台不一致的行为（CRT 匹配、静态库命名、Linux 还要
+#    --exclude-libs 隐藏符号），且"编译/获取 OpenSSL"这一步只是从用户身上
+#    转移到了构建机上 —— 组合问题更多、收益不明显，故**不做**。
+#
+# ★ 显式 `-DNETMECH_TLS=ON` 但找不到 OpenSSL ⇒ 配置期**硬失败**：
+#    用户已经明确表达了意图，悄悄降级只会得到"编出来还是不支持 TLS"的困惑。
+#
+# 用法：
+#   cmake -S . -B build -DNETMECH_TLS=ON
+#   cmake -S . -B build -DNETMECH_TLS=ON -DOPENSSL_ROOT_DIR=<OpenSSL 前缀>
+# ---------------------------------------------------------------------------
+option(NETMECH_TLS "启用进程内 TLS 终结（默认 OFF；需要 OpenSSL 1.1.1+）" OFF)
+
+if(NETMECH_TLS)
+    find_package(OpenSSL QUIET)
+    if(NOT OpenSSL_FOUND)
+        message(FATAL_ERROR
+            "netmech: 显式要求了 -DNETMECH_TLS=ON，但没找到 OpenSSL。\n"
+            "   请先准备 OpenSSL 1.1.1+ 开发包：\n"
+            "     Linux : sudo apt install -y libssl-dev   （或发行版等价命令）\n"
+            "     Windows: 安装 OpenSSL 开发包 / vcpkg install openssl，\n"
+            "              再用 -DOPENSSL_ROOT_DIR=<前缀> 指路\n"
+            "   不想要 TLS：去掉 -DNETMECH_TLS（默认就是 OFF）。")
+    endif()
+    message(STATUS "   TLS           : ON  (OpenSSL ${OPENSSL_VERSION})")
+else()
+    message(STATUS "   TLS           : OFF（默认；-DNETMECH_TLS=ON 可启用）")
+endif()
 
 # 位置无关代码。
 #
@@ -175,6 +216,27 @@ elseif(UNIX)
 endif()
 
 # ---------------------------------------------------------------------------
+# TLS 依赖（NETMECH_TLS=ON 时）
+# ---------------------------------------------------------------------------
+#  为什么挂在 interface 目标上而不是 netmech 私有链接：
+#    静态库的使用者最终要链接 OpenSSL 的符号，导出包里必须带上这条依赖
+#    （netmechConfig.cmake.in 里的 find_dependency 与它配对）。
+#  为什么把 NETMECH_HAS_TLS 也做成 INTERFACE 定义：
+#    src/ 用它来编译 TLS 实现；测试/示例用它来决定跑不跑 TLS 用例，
+#    保证"同一个构建里所有人看到的编译开关一致"——比各自判断
+#    OpenSSL_FOUND 更不容易出错。
+if(NETMECH_TLS)
+    target_compile_definitions(netmech_compile_options INTERFACE NETMECH_HAS_TLS)
+    # OpenSSL 是**对外依赖**：静态库的使用者最终要靠它解析 SSL_* 符号，
+    # 所以挂在 INTERFACE 上；导出包里的 find_dependency(OpenSSL) 与之配对。
+    # （想要单文件交付就静态链接 OpenSSL 自己：
+    #   -DOPENSSL_USE_STATIC_LIBS=TRUE -DOPENSSL_ROOT_DIR=<静态 OpenSSL 前缀>）
+    target_link_libraries(netmech_compile_options INTERFACE
+        OpenSSL::SSL
+        OpenSSL::Crypto)
+endif()
+
+# ---------------------------------------------------------------------------
 # 4. 源文件收集
 # ---------------------------------------------------------------------------
 set(NETMECH_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -230,6 +292,13 @@ endif()
 # 独立 Asio 是 header-only：无需链接任何第三方库。
 target_link_libraries(netmech PUBLIC netmech_compile_options)
 
+# 导出给 netmechConfig.cmake.in 用（configure_package_config_file 会替换）。
+if(NETMECH_TLS)
+    set(NETMECH_TLS_ENABLED ON)
+else()
+    set(NETMECH_TLS_ENABLED OFF)
+endif()
+
 # ---------------------------------------------------------------------------
 # 5. 头文件就绪性检查（并行开发期间给出清晰提示而不是一堆模板错误）
 # ---------------------------------------------------------------------------
@@ -253,6 +322,8 @@ if(NETMECH_BUILD_TESTS)
             add_executable(netmech_ut ${NETMECH_TEST_SOURCES})
             set_target_properties(netmech_ut PROPERTIES FOLDER "netmech/test")
             target_include_directories(netmech_ut PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/test")
+            # netmech 的 INTERFACE 依赖已经把 OpenSSL::SSL / OpenSSL::Crypto
+            # 带过来了（测试直接调 OpenSSL C API 生成自签证书），无需重复链接。
             target_link_libraries(netmech_ut PRIVATE netmech)
 
             add_test(NAME netmech_ut COMMAND netmech_ut)
@@ -358,9 +429,16 @@ endif()
 #  默认前缀：Linux -> /usr/local，Windows -> C:/Program Files/netmech
 # ---------------------------------------------------------------------------
 if(NOT NETMECH_IS_INTERFACE)
+    # ★ RUNTIME / LIBRARY 两行不能省：SHARED 构建在 Windows 上的产物是
+    #   `netmech.dll`（属于 RUNTIME），Linux 上是 `libnetmech.so`（属于 LIBRARY）。
+    #   只写 ARCHIVE 的话，装出来的包里**没有 .dll/.so** —— 下游 find_package
+    #   能配置、能编译，但一运行就 0xC0000135（找不到 netmech.dll）。
+    #   （0.9.0 没暴露这个问题，因为当时只在 Windows 上装了静态库。）
     install(TARGETS netmech
             EXPORT netmechTargets
             ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
             PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/netmech")
 else()
     install(TARGETS netmech EXPORT netmechTargets)
@@ -408,6 +486,7 @@ message(STATUS "   构建类型      : ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION
 message(STATUS "   NETMECH_BUILD_TESTS    : ${NETMECH_BUILD_TESTS}")
 message(STATUS "   NETMECH_BUILD_EXAMPLES : ${NETMECH_BUILD_EXAMPLES}")
 message(STATUS "   NETMECH_BUILD_BENCH    : ${NETMECH_BUILD_BENCH}")
+message(STATUS "   NETMECH_TLS            : ${NETMECH_TLS}")
 message(STATUS "   Asio 目录     : ${NETMECH_ASIO_INCLUDE_DIR}")
 message(STATUS "   输出目录      : ${NETMECH_OUTPUT_DIR}")
 message(STATUS "----------------------------------------------------------")

@@ -51,8 +51,8 @@
 namespace netmech {
 
 namespace {
-/// 一批最多合并几笔写请求。
-constexpr std::size_t kMaxWriteBatch = 16;
+/// 一批最多合并几笔写请求（缓冲序列长度由 Transport 接口定义）。
+constexpr std::size_t kMaxWriteBatch = kMaxIoBatch;
 /// 一批最多提交多少字节（限制单次系统调用的数据量，避免长尾延迟）。
 constexpr std::size_t kMaxWriteBatchBytes = 64 * 1024;
 } // namespace
@@ -75,7 +75,7 @@ error_code_t normalize_close_error(const error_code_t& ec) noexcept
 // Conn::Impl：构造/析构与通用投递
 // =============================================================================
 
-Conn::Impl::Impl(socket_t&& sock,
+Conn::Impl::Impl(TransportPtr&& tr,
                              io_context_t& ioc,
                              IoPool& pool_in,
                              std::weak_ptr<Conn> owner_in,
@@ -84,12 +84,13 @@ Conn::Impl::Impl(socket_t&& sock,
                              endpoint_t remote,
                              std::shared_ptr<void> user_ctx)
     : pool(&pool_in)
-    , socket(std::move(sock))
+    , transport(std::move(tr))
     , id(ep_id)
     , local_addr(local)
     , remote_addr(remote)
     , owner(std::move(owner_in))
     , user_context(std::move(user_ctx))
+    , hs_timer(ioc)
     , recv_ka(ioc)
     , send_ka(ioc)
 {
@@ -111,9 +112,12 @@ Conn::Impl::~Impl()
     error_code_t ignored;
     recv_ka.timer.cancel(ignored);
     send_ka.timer.cancel(ignored);
+    hs_timer.cancel(ignored);
     // 兜底关闭（正常路径已在 do_close 里关过；这里只处理"没走到 do_close"的情况）。
     // 同样尊重 linger_zero，理由见 do_close 里的注释。
-    close_socket_noexcept(socket, /*graceful=*/!linger_zero);
+    if (transport) {
+        transport->close(/*graceful=*/!linger_zero);
+    }
 
     // 兜底摘除：若某个路径没能走到 do_close（理论上不应发生），这里保证
     // Mechanism 的连接表不会残留一个已失效的 id（否则 endpoint_count()
@@ -141,10 +145,10 @@ std::shared_ptr<Conn> Conn::Impl::public_self() const noexcept
 
 void Conn::Impl::post(std::function<void()> fn)
 {
-    if (!fn) {
+    if (!fn || !transport) {
         return;
     }
-    asio::post(socket.get_executor(), [fn = std::move(fn)]() mutable {
+    asio::post(transport->get_executor(), [fn = std::move(fn)]() mutable {
         try {
             fn();
         } catch (...) {
@@ -196,7 +200,7 @@ bool Conn::Impl::accept_write(ConstBuf buf)
             return false;
         }
         // buf 按值捕获：owner 的引用计数 +1，库因此持有这块内存直到完成回调。
-        asio::post(socket.get_executor(),
+        asio::post(transport->get_executor(),
                    [impl = std::move(state), buf, bytes]() mutable {
                        impl->do_accept_write(std::move(buf), bytes);
                    });
@@ -285,8 +289,8 @@ void Conn::Impl::pump_write()
         //   数组里未使用的元素是零长度 buffer，asio 会自动跳过。
         //
         //   bufs 必须活到完成回调：按值捕获（16 × 16B，无堆分配）。
-        asio::async_write(
-            socket, bufs,
+        transport->async_write(
+            bufs,
             [impl = std::move(self), bufs](const error_code_t& ec, std::size_t n) mutable {
                 (void)bufs;   // 仅为延长生命周期，不参与计算
                 impl->handle_write_done(ec, n);
@@ -433,7 +437,7 @@ bool Conn::Impl::accept_read(Buf buf, ReadMode mode)
             has_pending_read.store(false, std::memory_order_release);
             return false;
         }
-        asio::post(socket.get_executor(),
+        asio::post(transport->get_executor(),
                    [impl = std::move(state), buf, mode]() mutable {
                        impl->do_accept_read(std::move(buf), mode);
                    });
@@ -472,18 +476,14 @@ void Conn::Impl::do_accept_read(Buf buf, ReadMode mode)
             }
             return;
         }
+        Transport::IoHandler on_done =
+            [impl = std::move(self), use_exact](const error_code_t& ec, std::size_t n) mutable {
+                impl->handle_read_done(ec, n, use_exact);
+            };
         if (use_exact) {
-            asio::async_read(
-                socket, wire,
-                [impl = std::move(self)](const error_code_t& ec, std::size_t n) mutable {
-                    impl->handle_read_done(ec, n, true);
-                });
+            transport->async_read_exact(wire, std::move(on_done));
         } else {
-            socket.async_read_some(
-                wire,
-                [impl = std::move(self)](const error_code_t& ec, std::size_t n) mutable {
-                    impl->handle_read_done(ec, n, false);
-                });
+            transport->async_read_some(wire, std::move(on_done));
         }
     } catch (...) {
         // 发起失败：**取回**在途请求并以错误通知一次（已受理 ⇒ 必有通知）。
@@ -805,6 +805,168 @@ void Conn::Impl::on_send_keepalive_tick(const error_code_t& ec, std::uint64_t ge
 }
 
 // =============================================================================
+// 接管：握手 + 交棒
+// =============================================================================
+//
+//  明文路径与 0.90 **完全一致**：establish() 同步调用 ready，不额外投递，
+//  因此 on_accept / on_linkup 的时序、重入语义都没有变化 —— 这是"P0 只插
+//  抽象层、不改行为"的落点。
+//
+//  TLS 路径多两件事：
+//    1. 握手本身（带超时）；
+//    2. 握手期间的并发配额（CPU 密集操作，且 1 个 io_context 只有 1 条线程）。
+
+void Conn::Impl::establish(std::function<void()> ready)
+{
+    if (!ready) {
+        do_close(make_boost_error_code(NetErrc::not_connected));
+        return;
+    }
+    if (closing.load(std::memory_order_acquire) || !transport) {
+        // 受理之后、执行之前就被 close()：按既有语义收敛（不交棒）。
+        do_close(normalize_close_error(close_reason));
+        return;
+    }
+
+    if (!transport->needs_handshake()) {
+        ready();                       // 明文：同步交棒（行为与 0.90 一致）
+        return;
+    }
+
+    if (acquire_handshake_slot_hook) {
+        bool acquired = false;
+        try {
+            acquired = acquire_handshake_slot_hook();
+        } catch (...) {
+            acquired = false;
+        }
+        if (!acquired) {
+            // 并发握手已达上限：立刻拒绝，不排队（排队只会把 CPU 挤得更死）。
+            fail_establish(make_boost_error_code(NetErrc::tls_handshake_failed));
+            return;
+        }
+        handshake_slot_held = true;
+    }
+
+    handshake_active = true;
+
+    if (handshake_timeout_ms > 0) {
+        std::shared_ptr<Conn::Impl> timer_self = self_ref();
+        if (timer_self) {
+            hs_timer.expires_after(std::chrono::milliseconds(handshake_timeout_ms));
+            hs_timer.async_wait([impl = std::move(timer_self)](const error_code_t& ec) mutable {
+                if (ec) {
+                    return;            // 被完成路径取消
+                }
+                impl->on_handshake_timeout();
+            });
+        }
+    }
+
+    std::shared_ptr<Conn::Impl> self = self_ref();
+    if (!self) {
+        fail_establish(make_boost_error_code(NetErrc::not_connected));
+        return;
+    }
+    try {
+        // ★ 强自持：完成处理捕获 Impl 的强引用 —— 握手期间连接不会被回收。
+        transport->async_handshake(
+            [impl = std::move(self), ready = std::move(ready)](
+                const error_code_t& ec) mutable {
+                impl->on_handshake_done(ec, std::move(ready));
+            });
+    } catch (...) {
+        // 发起失败（例如 socket 已失效）：按握手失败收尾，保证"恰好一次"通知。
+        fail_establish(asio::error::operation_aborted);
+    }
+}
+
+void Conn::Impl::on_handshake_done(const error_code_t& ec, std::function<void()> ready)
+{
+    if (!handshake_active) {
+        return;                        // 已被超时 / 关闭路径收尾
+    }
+    handshake_active = false;
+    {
+        error_code_t ignored;
+        hs_timer.cancel(ignored);
+    }
+    release_handshake_slot();
+
+    if (closing.load(std::memory_order_acquire)) {
+        do_close(normalize_close_error(close_reason));
+        return;
+    }
+    if (ec) {
+        fail_establish(ec);
+        return;
+    }
+    if (ready) {
+        ready();
+    }
+}
+
+void Conn::Impl::on_handshake_timeout()
+{
+    if (!handshake_active) {
+        return;
+    }
+    // 先关传输：挂起的 async_handshake 会以 operation_aborted 收敛，
+    // 其回调看到 handshake_active 已为 false 后静默退出。
+    handshake_active = false;
+    if (transport) {
+        transport->close(/*graceful=*/false);
+    }
+    release_handshake_slot();
+    fail_establish(make_boost_error_code(NetErrc::tls_handshake_timeout));
+}
+
+void Conn::Impl::fail_establish(const error_code_t& ec)
+{
+    const error_code_t err = normalize_close_error(ec);
+
+    handshake_active = false;
+    {
+        error_code_t ignored;
+        hs_timer.cancel(ignored);
+    }
+    release_handshake_slot();
+
+    std::shared_ptr<Linkable> lb;
+    try {
+        lb = linkable.lock();
+    } catch (...) {
+        lb = std::shared_ptr<Linkable>();
+    }
+    if (lb) {
+        // 复制为局部变量再进嵌套 lambda：MSVC 对"外层显式捕获 + 内层 [&]
+        // 引用该捕获名"会歧义解析（同 mechanism.cpp 里的说明）。
+        std::shared_ptr<Linkable> keep = lb;
+        const Address remote = detail::from_asio_endpoint(remote_addr);
+        if (server_side) {
+            invoke_void([keep, remote, err]() { keep->on_accept_failed(remote, err); });
+        } else {
+            invoke_void([keep, remote, err]() { keep->on_linkfail(remote, err); });
+        }
+    }
+
+    // 从未交给业务：不投递 on_linkdown，handler 也从未安装。
+    link_established = false;
+    do_close(err);
+}
+
+void Conn::Impl::release_handshake_slot() noexcept
+{
+    if (!handshake_slot_held) {
+        return;
+    }
+    handshake_slot_held = false;
+    if (release_handshake_slot_hook) {
+        invoke_void([this]() { release_handshake_slot_hook(); });
+    }
+}
+
+// =============================================================================
 // 关闭
 // =============================================================================
 
@@ -818,9 +980,9 @@ void Conn::Impl::request_close(const error_code_t& reason) noexcept
         //       Conn**。否则调用方先释放 Conn 时，公共对象会先析构，
         //       `owner.lock()` 失败 → on_linkdown 被**静默丢弃**。
         std::shared_ptr<Conn::Impl> state = self_ref();
-        if (state) {
+        if (state && transport) {
             std::shared_ptr<Conn> ep = public_self();
-            asio::post(socket.get_executor(),
+            asio::post(transport->get_executor(),
                        [impl = std::move(state), ep = std::move(ep), reason]() mutable {
                            (void)ep;   // 保持公共对象存活到本任务结束
                            impl->do_close(reason);
@@ -862,7 +1024,25 @@ void Conn::Impl::do_close(const error_code_t& reason) noexcept
     //      SO_LINGER{1,0} 的 RST 就发不成，端口照样进 TIME_WAIT ——
     //      也就是说这个配置项**只有在这里生效**（真正关 socket 的是这一处，
     //      ~Impl 里那次只是兜底，socket 早已关闭）。
-    close_socket_noexcept(socket, /*graceful=*/!linger_zero);
+    //
+    //    ★ TLS 说明：`graceful=true` 时 TlsTransport 会**尽力**发送
+    //      close_notify（一次非阻塞 SSL_shutdown），随后照常 shutdown+close。
+    //      它**不等待**对端回 close_notify —— 等待是异步的，且恶意对端可以
+    //      永不回应；本库 close() 的契约是"同步、noexcept、不阻塞"。
+    //      因此对端可能观察到 truncation，这属于已知取舍（见 conn.hpp）。
+    if (transport) {
+        transport->close(/*graceful=*/!linger_zero);
+    }
+
+    // 1.5) 握手未完成就被关闭：释放配额并取消超时定时器。
+    //      （挂起的 async_handshake 会因上面那次 close 以 operation_aborted
+    //        收尾，on_handshake_done 里看到 handshake_active 已为 false 直接返回。）
+    handshake_active = false;
+    release_handshake_slot();
+    {
+        error_code_t hs_ignored;
+        hs_timer.cancel(hs_ignored);
+    }
 
     // 2) 取消并复位保活定时器（不依赖回调时序，显式 reset）。
     recv_ka.reset();
@@ -1116,14 +1296,14 @@ bool Conn::is_open() const noexcept
 
 void Conn::post(std::function<void()> fn, bool allow_inline) noexcept
 {
-    if (!m_impl || !fn) {
+    if (!m_impl || !fn || !m_impl->transport) {
         return;
     }
     auto self = m_impl;   // 持住 Impl：fn 执行前连接不会被回收
     // 与 UdpEndpoint::post 同一套语义：dispatch 在 io 线程上同步执行，
     // 否则排队。任务异常在这里兜底（V1：绝不逃逸到 io_context）。
     if (allow_inline) {
-        asio::dispatch(self->socket.get_executor(),
+        asio::dispatch(self->transport->get_executor(),
                        [self, fn = std::move(fn)]() mutable {
                            try {
                                fn();
@@ -1131,7 +1311,7 @@ void Conn::post(std::function<void()> fn, bool allow_inline) noexcept
                            }
                        });
     } else {
-        asio::post(self->socket.get_executor(),
+        asio::post(self->transport->get_executor(),
                    [self, fn = std::move(fn)]() mutable {
                        try {
                            fn();

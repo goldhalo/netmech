@@ -70,6 +70,16 @@ std::string net_errc_message(int ev) noexcept
         return "operation cancelled";
     case NetErrc::datagram_truncated:
         return "datagram truncated (payload larger than receive buffer)";
+    case NetErrc::tls_handshake_failed:
+        return "TLS handshake failed";
+    case NetErrc::tls_handshake_timeout:
+        return "TLS handshake timeout";
+    case NetErrc::tls_cert_rejected:
+        return "peer certificate rejected (fingerprint mismatch, untrusted chain, or host name mismatch)";
+    case NetErrc::tls_unsupported:
+        return "TLS not supported (built without NETMECH_TLS, or not applicable)";
+    case NetErrc::tls_truncated:
+        return "TLS stream truncated (peer closed without close_notify)";
     }
     return "unknown net error";
 }
@@ -135,7 +145,7 @@ std::optional<NetErrc> from_boost_error_code(const std::error_code& ec) noexcept
     if (ec.category() == net_category()) {
         const int ev = ec.value();
         if (ev >= static_cast<int>(NetErrc::ok)
-            && ev <= static_cast<int>(NetErrc::datagram_truncated)) {
+            && ev <= static_cast<int>(NetErrc::tls_truncated)) {
             return static_cast<NetErrc>(ev);
         }
         return std::nullopt;
@@ -143,7 +153,7 @@ std::optional<NetErrc> from_boost_error_code(const std::error_code& ec) noexcept
     if (ec.category() == net_boost_category()) {
         const int ev = ec.value() - kNetErrcBase;
         if (ev >= static_cast<int>(NetErrc::ok)
-            && ev <= static_cast<int>(NetErrc::datagram_truncated)) {
+            && ev <= static_cast<int>(NetErrc::tls_truncated)) {
             return static_cast<NetErrc>(ev);
         }
         return std::nullopt;

@@ -7,6 +7,73 @@
 
 ---
 
+## [0.91.0] - 2026-11-15
+
+### 新增
+
+**进程内 TLS 终结（可选，`NETMECH_TLS`，默认 **OFF**）**
+
+- `include/netmech/tls.hpp`：`TlsConfig` / `TlsVersion`。公共头仍然**不引**
+  asio / OpenSSL，配置是纯 C++ 值类型。
+- `Mechanism::listen(addr, linkable, ListenOptions)` /
+  `Mechanism::connect(addr, linkable, ConnectOptions)`：`options.tls` 有值即启用 TLS。
+  旧的位置参数重载**完全不变**，既有调用点零改动。
+- **自签 + 指纹 pin** 是默认形态：`TlsConfig::pinned_sha256` 给 SHA-256 指纹
+  （允许 `:`/空格/`-` 分隔、大小写不敏感）。客户端"既不 pin 也不校验证书链"
+  会被 `listen()/connect()` 直接拒绝（`invalid_argument`），避免"假 TLS"。
+- `Linkable::on_accept_failed(remote, ec)`：服务端在**接管前**协商失败
+  （握手失败/超时/并发配额已满）时的回调。默认空实现，不影响既有派生类。
+- 错误码：`tls_handshake_failed` / `tls_handshake_timeout` / `tls_cert_rejected` /
+  `tls_unsupported` / `tls_truncated`。
+- `Config::max_inflight_tls_handshakes`（默认 64）：全局并发握手上限。
+  握手是 CPU 密集操作，而每个 io_context 只有 1 条线程 —— 无上限时一批恶意
+  连接就能把正常连接的读写一起拖住。
+- 构建：`-DNETMECH_TLS` **默认 OFF**；显式 `ON` 且缺 OpenSSL 时**配置期硬失败**
+  （不再静默降级）。**OpenSSL 一律由构建方准备**（`find_package(OpenSSL)`，
+  Windows/Linux 行为一致），导出包追加 `find_dependency(OpenSSL)`。
+  想单文件交付就静态链 OpenSSL：`-DOPENSSL_USE_STATIC_LIBS=TRUE`
+  （CRT 必须同为 `/MD`）。
+  *"仓内自带 OpenSSL 静态库"的方案已否决*：它带来平台差异（lib 命名、CRT、
+    Linux 需 `--exclude-libs`），组合问题多于收益。
+
+### 变更
+
+**内部：`Conn` 不再直接持有 socket，改为面向 `Transport` 抽象**
+
+- 新增内部接口 `src/transport.hpp`：`async_read_some` / `async_read_exact` /
+  `async_write` / `async_handshake` / `close(graceful)`。明文实现是薄转发，
+  **行为与 0.90 逐字等价**（86 个既有用例、932 条断言全绿即为证据）。
+- 收益：明文与 TLS 可以在同一个 `Mechanism` 上共存；将来换 mbedTLS/BearSSL
+  只需再加一个实现（OpenSSL 只出现在 `tls_transport.cpp` 一个 TU 里）。
+- `Conn::Impl` 的成员顺序约束从 "`pool` 在 `socket` 之前" 改为
+  "`pool` 在 `transport` 之前"，理由不变（析构必须先于 io_context）。
+
+### 修复
+
+**`cmake --install` 在 SHARED 构建下不装 `.dll` / `.so`（打包缺口，0.90 起就存在）**
+
+`install(TARGETS netmech ...)` 只写了 `ARCHIVE DESTINATION lib`，
+没有 `RUNTIME`（Windows 的 `.dll`）与 `LIBRARY`（Linux 的 `.so`）。
+后果很隐蔽：下游 `find_package(netmech)` 能配置、能编译，**一运行就是
+`0xC0000135` / 找不到共享库** —— 因为装出来的包里根本没有库文件本身。
+已补上 `RUNTIME DESTINATION bin` 与 `LIBRARY DESTINATION lib`。
+
+### 已知取舍
+
+- **Windows 的 `OPENSSL_Applink`**：应用若自己把 `FILE*` 传给 OpenSSL
+  （`PEM_write_X509(FILE*, ...)` / `BIO_new_fp`），在 OpenSSL 为独立 DLL 时会
+  abort（`OPENSSL_Uplink: no OPENSSL_Applink`）。netmech 公共 API 不暴露
+  `FILE*`，库本身不受影响；测试里的证书生成已改用 `BIO_new_file` 系列。
+- **close_notify 是尽力而为**：`Conn::close()` 的契约是"同步、noexcept、不阻塞"，
+  而 TLS 优雅关闭需要等待对端回应（恶意对端可以永不回应）。因此关闭时只做一次
+  非阻塞 `SSL_shutdown`（发出 close_notify）随即关闭，对端可能观察到 truncation。
+  反过来，**收到**不带 close_notify 的 EOF 会被映射成 `NetErrc::tls_truncated`，
+  不会静默当成普通 EOF。
+- TLS 连接每条约 30–40 KiB 的 OpenSSL 开销，容量规划不要只看 `socket_buf_size`。
+- **不做 DTLS**（UDP 侧的 TLS 变体）：`UdpEndpoint` 不受影响。
+
+---
+
 ## [未发布]
 
 ### 新增

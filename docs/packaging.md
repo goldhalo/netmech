@@ -232,7 +232,22 @@ auto srv = httpmech::HttpServer::create_with_mechanism(mech, cfg, router);
 
 - **不做 pimpl 化整个 API**（方案 F）。这些库的使用者就是自己的应用，ABI 稳定没有收益，pimpl 只会让调试更难。
 - **不做插件式后端**（"把 netmech 换成别的传输"）。没有第二个传输实现的需求，抽象出来是纯负担。
-- **不做 TLS**。这跟发布形态无关，别混在一起谈。
+  *（v0.91 修订：为了 TLS 已经抽出一层内部 `Transport`，但**不对外暴露**，
+  也不打算做运行时可插拔的多后端注册表 —— 换后端仍要改代码重新编译。）*
+- ~~**不做 TLS**~~ **已修订（v0.91）**：TLS 改为**可选的进程内终结**，
+  且**默认不编**（`-DNETMECH_TLS=OFF`，行为与 0.90 完全一致）。
+  一旦显式开启，**OpenSSL 一律由构建方准备**（`find_package(OpenSSL)`，
+  Windows / Linux 行为一致），netmech 不携带、不代编 OpenSSL。
+  对发布形态的影响：
+
+  | 方式 | 参数 | 发行物 | 使用方是否需要 OpenSSL |
+  |---|---|---|---|
+  | 动态（默认） | `-DNETMECH_TLS=ON` | 库 + 系统 OpenSSL（Windows 需带 `libssl-3-x64.dll` / `libcrypto-3-x64.dll`） | 是（导出包 `find_dependency`） |
+  | 静态链入 OpenSSL | 再加 `-DOPENSSL_USE_STATIC_LIBS=TRUE` | 单个库文件（Linux 实测 +5 MB） | 否 |
+
+  静态化之后 OpenSSL 的 CVE 由我们自己负责，且 netmech 被静态链进多个 `.so`
+  时每个 `.so` 会各带一份 —— 多 `.so` 部署仍建议动态链接。
+  详见 [`TLS.md`](TLS.md) §2.3。
 
 ## 多库共享 netmech（modbusmech / httpmech / rtspmech / rtpmech 同进程）
 

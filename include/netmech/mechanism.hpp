@@ -50,10 +50,12 @@
 #include <optional>
 #include <vector>
 
-// 本头**不引 asio**：只暴露 netmech::Address / std::error_code。
+// 本头**不引 asio / OpenSSL**：只暴露 netmech::Address / std::error_code /
+// netmech::TlsConfig（后者也只是纯 C++ 值类型）。
 
 #include "netmech/common.hpp"
 #include "netmech/linkable.hpp"
+#include "netmech/tls.hpp"
 // ↑ 本头直接用 std::weak_ptr<Linkable> 作为参数类型。缺这个 include 时，
 //   单独 #include <netmech/mechanism.hpp> 会报 "Linkable was not declared"
 //   —— 只有按 netmech.hpp 的顺序（linkable 在前）引入时才碰巧编得过。
@@ -83,6 +85,52 @@ class Runtime;   ///< 可注入的 io 运行时（netmech/runtime.hpp）
 /// 需要更大 backlog 时请显式传入 listen() 的第三个参数。
 /// 用 inline constexpr 而非宏，避免污染调用方命名空间。
 inline constexpr std::uint32_t kDefaultBacklog = 128;
+
+// =============================================================================
+//  监听 / 连接选项（v0.91）
+// =============================================================================
+//  为什么用结构体而不是继续加形参：
+//    * 位置参数再往下加（backlog / user_ctx / tls / …）就没人记得住顺序了；
+//    * `listen(addr, lb, {})` 这类写法在"uint32_t backlog"与"TlsConfig"之间
+//      **会产生重载歧义**，结构体把这个问题从语言层面消掉；
+//    * 以后加字段（ALPN、限流、证书热加载）不需要再动函数签名。
+
+/// 一次 `listen()` 的可选参数。
+struct ListenOptions {
+    /// 已连接但尚未 accept 的队列长度上限。0 = 用 `kDefaultBacklog`。
+    std::uint32_t         backlog = kDefaultBacklog;
+
+    /// 透传给每个新连接的用户上下文（`Conn::user_context()` 可取回）。
+    std::shared_ptr<void> user_ctx;
+
+    /// 有值 ⇒ **该监听器接受 TLS 连接**（进程内 TLS 终结）。
+    ///
+    /// @note 服务端必须有 `cert_chain_file` + `private_key_file`，
+    ///       否则 `listen()` 直接返回 `invalid_argument`。
+    /// @note 同一个 `Mechanism` 上可以同时有明文监听器与 TLS 监听器。
+    std::optional<TlsConfig> tls;
+};
+
+/// 一次 `connect()` 的可选参数。
+struct ConnectOptions {
+    /// 连接超时（毫秒），只覆盖 **TCP 建链**，不含 TLS 握手。
+    /// 0 = 不设超时（依赖 SYN 重传，不建议）。
+    std::uint32_t timeout_ms = 3000;
+
+    /// 本地绑定地址；默认 0.0.0.0:0 = 由系统选择。
+    Address       local{};
+
+    /// 透传给该连接的用户上下文。
+    std::shared_ptr<void> user_ctx;
+
+    /// 有值 ⇒ **该连接使用 TLS**（客户端握手）。
+    ///
+    /// @note 必须给出 `pinned_sha256` 或 `verify_certificate = true`，
+    ///       否则 `connect()` 直接返回 `invalid_argument`（见 tls.hpp 规则 [2]）。
+    /// @note 握手超时由 `TlsConfig::handshake_timeout_ms` 单独控制：
+    ///       建链成功后开始计时，与上面的 `timeout_ms` 无关。
+    std::optional<TlsConfig> tls;
+};
 
 /// 网络运行时。整个进程内通常只需要一个实例。
 ///
@@ -140,7 +188,21 @@ public:
         /// socket 发送/接收缓冲区大小（SO_SNDBUF / SO_RCVBUF），默认 256 KiB。
         /// 设为 0 表示不设置（使用系统默认）。
         /// @note 嵌入式设备内存紧张时可调小；高吞吐场景可调大。
+        /// @note TLS 连接的 OpenSSL 每连接还有约 30–40 KiB 的 SSL/BIO 开销，
+        ///       容量规划时**不要**只按本项估算。
         std::size_t socket_buf_size  = 256 * 1024;
+
+        /// 同时进行中的 TLS 握手数上限（整个 Mechanism 所有监听器合计）。
+        ///
+        /// - `0` = 不限（不推荐：握手是 CPU 密集操作，且每个 io_context
+        ///   只有 1 条线程，握手风暴会把同 context 上正常连接的读写一起拖住）；
+        /// - 达到上限时，新连接**立即**被拒绝（服务端走
+        ///   `on_accept_failed`，客户端走 `on_linkfail`），不排队 ——
+        ///   排队只会把 CPU 挤得更死。
+        ///
+        /// @note 只对 TLS 生效；明文连接不占配额。
+        /// @note 默认 64：按"4 条 io 线程 × 16"估的起点，按实测调整。
+        std::size_t max_inflight_tls_handshakes = 64;
 
     };
 
@@ -231,9 +293,31 @@ public:
     ///  - accept 遇到 `operation_aborted`（主动关闭）以外的一般错误时，
     ///    会**退避后重新 accept**，而不是像旧实现那样永久停止监听。
     std::error_code listen(const Address& local,
-                                     std::weak_ptr<Linkable> linkable,
-                                     std::uint32_t backlog = kDefaultBacklog,
-                                     std::shared_ptr<void> user_ctx = nullptr);
+                                    std::weak_ptr<Linkable> linkable,
+                                    std::uint32_t backlog = kDefaultBacklog,
+                                    std::shared_ptr<void> user_ctx = nullptr);
+
+    /// 带选项的 `listen()`（v0.91：用于启用进程内 TLS 终结）。
+    ///
+    /// @param[in] local    监听地址；语义同上一个重载。
+    /// @param[in] linkable 订阅者；语义同上一个重载。
+    /// @param[in] opts     选项（backlog / user_ctx / tls）。
+    /// @return 受理成功返回空 error_code。
+    ///         失败可能值在上一个重载的基础上增加：
+    ///         * `NetErrc::invalid_argument` —— TLS 配置不合法（缺证书/私钥、
+    ///           指纹格式错）；
+    ///         * `NetErrc::tls_unsupported` —— 本构建未启用 TLS
+    ///           （`-DNETMECH_TLS=OFF`），但传了 `opts.tls`；
+    ///         * 证书/私钥文件打不开时原样返回底层错误码。
+    ///
+    /// @par TLS 的代价
+    ///  - 每个 TLS 监听器持有**一份** `SSL_CTX`（证书与私钥只加载一次）；
+    ///  - 握手在该连接绑定的 io 线程上同步完成（CPU 密集），受
+    ///    `Config::max_inflight_tls_handshakes` 限制；
+    ///  - 从 `SSL_CTX` 到 `Conn` 的引用关系保证证书配置在连接存活期内有效。
+    std::error_code listen(const Address& local,
+                           std::weak_ptr<Linkable> linkable,
+                           const ListenOptions& opts);
 
     /// 停止**某一个**监听器。
     ///
@@ -327,10 +411,30 @@ public:
     ///    并以 `asio::error::timed_out` 调 on_linkfail。
     ///  - 这是对旧 `relink` 忽略 `to` 参数缺陷的修复。
     std::error_code connect(const Address& remote,
-                                      std::weak_ptr<Linkable> linkable,
-                                      std::uint32_t timeout_ms = 3000,
-                                      const Address& local = Address{},
-                                      std::shared_ptr<void> user_ctx = nullptr);
+                                     std::weak_ptr<Linkable> linkable,
+                                     std::uint32_t timeout_ms = 3000,
+                                     const Address& local = Address{},
+                                     std::shared_ptr<void> user_ctx = nullptr);
+
+    /// 带选项的 `connect()`（v0.91：用于客户端 TLS）。
+    ///
+    /// @param[in] remote   目标地址（IP 字面量；本库不做 DNS 解析）。
+    /// @param[in] linkable 订阅者；语义同上一个重载。
+    /// @param[in] opts     选项（timeout_ms / local / user_ctx / tls）。
+    /// @return 受理成功返回空 error_code。失败可能值增加：
+    ///         * `NetErrc::invalid_argument` —— TLS 配置不合法（既没 pin
+    ///           也没开链校验、指纹格式错）；
+    ///         * `NetErrc::tls_unsupported` —— 本构建未启用 TLS。
+    ///
+    /// @par TLS 握手失败怎么通知
+    ///  TCP 建链成功后先做握手；握手失败（证书被拒 / 超时 / 协议不符）走
+    ///  `Linkable::on_linkfail(remote, ec)`，**不会**有 `on_linkup`，
+    ///  也**不会**有 `on_linkdown` —— 这条连接从未交给业务。
+    ///  可用 `from_boost_error_code(ec)` 归类（`tls_handshake_failed` /
+    ///  `tls_handshake_timeout` / `tls_cert_rejected` …）。
+    std::error_code connect(const Address& remote,
+                            std::weak_ptr<Linkable> linkable,
+                            const ConnectOptions& opts);
 
     // -------------------------------------------------------------------------
     // 按连接 ID 操作（业务侧无需保存 Conn*）
@@ -453,6 +557,23 @@ private:
     /// 仅允许 create() 构造。
     /// @param[in] impl 内部状态，非空。
     explicit Mechanism(std::shared_ptr<Impl> impl);
+
+    /// listen 的实际实现（两个公开重载都走这里）。
+    ///
+    /// @param[in] tls 为空 = 明文监听器。
+    std::error_code listen_impl(const Address& local,
+                                std::weak_ptr<Linkable> linkable,
+                                std::uint32_t backlog,
+                                std::shared_ptr<void> user_ctx,
+                                const std::optional<TlsConfig>& tls);
+
+    /// connect 的实际实现（两个公开重载都走这里）。
+    std::error_code connect_impl(const Address& remote,
+                                 std::weak_ptr<Linkable> linkable,
+                                 std::uint32_t timeout_ms,
+                                 const Address& local,
+                                 std::shared_ptr<void> user_ctx,
+                                 const std::optional<TlsConfig>& tls);
 
     /// 指向内部实现状态的句柄（private，外部不可访问）。
     std::shared_ptr<Impl> m_impl;

@@ -46,9 +46,12 @@
 #include "acceptor.hpp"
 #include "conn_state.hpp"
 #include "registry.hpp"
+#include "transport.hpp"
+#include "tls_internal.hpp"
 
 #include "netmech/conn.hpp"
 #include "netmech/common.hpp"
+#include "netmech/tls.hpp"
 #include "io_pool.hpp"
 #include "runtime_internal.hpp"
 
@@ -90,6 +93,80 @@ struct ConnectOp;   ///< 在途 connect 的操作对象（定义在文件后半�
 struct ConnEntry {
     std::shared_ptr<Conn> ep;    ///< 强引用：回调期间保证对象存活（A-04）
 };
+
+namespace {
+
+// -----------------------------------------------------------------------------
+// TLS 辅助（v0.91）
+// -----------------------------------------------------------------------------
+//  两条原则：
+//   1. **配置错误在受理阶段暴露**：listen()/connect() 同步返回错误码，
+//      而不是等第一条连接来了才发现证书文件打不开；
+//   2. **TLS 关闭的构建也要给出正确分类**：配置写错 → invalid_argument，
+//      只是没编译 TLS → tls_unsupported。两者排查方向完全不同。
+
+#if defined(NETMECH_HAS_TLS)
+using TlsContextPtr = std::shared_ptr<TlsContext>;
+#else
+using TlsContextPtr = std::shared_ptr<void>;
+#endif
+
+/// 按配置构建 TLS 上下文。
+///
+/// @param[in]  tls    空 = 明文（不启用 TLS）。
+/// @param[in]  server true = 服务端（需要证书 + 私钥）。
+/// @param[out] out    成功时非空；空表示明文。
+/// @return 空 = 成功；否则为不可受理的原因。
+error_code_t make_tls_context(const std::optional<TlsConfig>& tls,
+                              bool server,
+                              TlsContextPtr& out)
+{
+    out.reset();
+    if (!tls.has_value()) {
+        return error_code_t{};
+    }
+
+    error_code_t ec = validate_tls_config(*tls, server);
+    if (ec) {
+        return ec;
+    }
+
+#if defined(NETMECH_HAS_TLS)
+    out = TlsContext::create(*tls, server, ec);
+    return ec;
+#else
+    (void)server;
+    return make_boost_error_code(NetErrc::tls_unsupported);
+#endif
+}
+
+/// 有效握手超时（毫秒）；明文返回 0。
+std::uint32_t effective_handshake_timeout(const std::optional<TlsConfig>& tls) noexcept
+{
+    if (!tls.has_value()) {
+        return 0;
+    }
+    return tls->handshake_timeout_ms == 0 ? 10000u : tls->handshake_timeout_ms;
+}
+
+/// 把**已连接**的 socket 包成传输（明文 or TLS）。
+///
+/// @note 传 `nullptr`（或 TLS 构建下的空 ctx）即明文；
+///       在 `NETMECH_TLS=OFF` 的构建里 ctx 恒为空（上面的函数会先失败）。
+[[nodiscard]] TransportPtr wrap_socket(socket_t&& sock, const TlsContextPtr& ctx)
+{
+#if defined(NETMECH_HAS_TLS)
+    if (ctx) {
+        return make_tls_transport(std::move(sock),
+                                  std::static_pointer_cast<TlsContext>(ctx));
+    }
+#else
+    (void)ctx;
+#endif
+    return make_plain_transport(std::move(sock));
+}
+
+} // namespace
 
 
 
@@ -138,6 +215,13 @@ struct Mechanism::Impl {
 
     /// 活跃连接数快照（避免 endpoint_count() 拿锁）。
     std::atomic<std::size_t>                          active_count{0};
+
+    /// 正在进行的 TLS 握手数（acceptor / connect 两侧合计）。
+    ///
+    /// 用途：把握手风暴挡在门外。握手是 CPU 密集操作（RSA/ECDSA 签名验签），
+    /// 而本库每个 io_context 只有 1 条线程 —— 无上限时，一批恶意连接可以让
+    /// 同 context 上所有正常连接的读写一起停顿。
+    std::atomic<std::size_t>                          inflight_handshakes{0};
 
     /// 指向自身的弱引用：给 Conn 注入"摘除钩子"时避免循环持有。
     /// 由 `Mechanism::create()` 在 `make_shared` 之后回填。
@@ -250,35 +334,42 @@ struct Mechanism::Impl {
         }
     }
 
-    /// 在当前 io 线程上为一个已连接 socket 创建 Conn 并登记。
+    /// 在当前 io 线程上为一个已建立的传输创建 Conn 并登记。
     ///
-    /// @param[in] sock   已连接 socket（移动）。
+    /// @param[in] tr     传输（明文或 TLS；移动，独占所有权）。
     /// @param[in] remote 对端地址。
     /// @param[in] local  本端地址。
     /// @param[in] lb     订阅者（weak）。
-    /// @return 创建成功返回 Conn；失败返回空（调用方负责关闭 socket）。
-    std::shared_ptr<Conn> make_endpoint(socket_t&& sock,
+    /// @return 创建成功返回 Conn；失败返回空（调用方负责关闭传输）。
+    std::shared_ptr<Conn> make_endpoint(TransportPtr&& tr,
                                            const endpoint_t& remote,
                                            const endpoint_t& local,
                                            std::weak_ptr<Linkable> lb,
-                                           std::shared_ptr<void> user_ctx)
+                                           std::shared_ptr<void> user_ctx,
+                                           std::uint32_t handshake_timeout_ms = 0)
     {
+        if (!tr) {
+            return std::shared_ptr<Conn>();
+        }
         const std::optional<endpoint_id_t> maybe_id = detail::IdRegistry::try_allocate();
         if (!maybe_id.has_value()) {
             return std::shared_ptr<Conn>();   // id 耗尽：宁可拒绝，绝不复用
         }
-        apply_socket_options(sock);
+        // socket 选项作用在**底层 TCP socket** 上：TLS 下就是 lowest_layer()，
+        // 语义与明文完全一致（握手前后都可以设置）。
+        apply_socket_options(tr->lowest_layer());
 
-        // 取 io_context：socket 的 executor 指向它。
-        io_context_t& ioc = static_cast<io_context_t&>(sock.get_executor().context());
+        // 取 io_context：传输的 executor 指向它。
+        io_context_t& ioc = static_cast<io_context_t&>(tr->get_executor().context());
 
         // owner 弱引用先给空：Conn 对象此刻还没构造出来，由
         // MakeConnObject 在 shared_ptr 就绪后回填（杜绝 A-01 的 bad_weak_ptr）。
         std::shared_ptr<Conn::Impl> state = std::make_shared<Conn::Impl>(
-            std::move(sock), ioc, *pool, std::weak_ptr<Conn>(), *maybe_id, local, remote,
+            std::move(tr), ioc, *pool, std::weak_ptr<Conn>(), *maybe_id, local, remote,
             std::move(user_ctx));
         state->linkable = std::move(lb);
         state->linger_zero = cfg.linger_zero;   // 关闭方式随运行时配置
+        state->handshake_timeout_ms = handshake_timeout_ms;
 
         // ★ Impl 自身**不再需要**弱自引用：它已继承 enable_shared_from_this，
         //   内部投递一律用 `self_ref()` 取强引用（强自持）。
@@ -309,6 +400,129 @@ struct Mechanism::Impl {
         // 登记到连接表：**先登记后回调**，回调期间对象必有强引用（A-04）。
         add_endpoint(ep);
         return ep;
+    }
+
+    /// 交棒给业务：`Linkable::on_accept`（服务端）/ `on_linkup`（客户端）
+    /// 取 handler，随后 `on_open` 进入服务。
+    ///
+    /// @note **在该连接的 io 线程上执行**，且一定发生在握手成功之后
+    ///       （明文没有握手，等价于"立即可用"）。
+    /// @note 两侧的"拒绝"语义不同，这是刻意的：
+    ///       服务端拒绝 = 这条连接从未交给业务 → 不投递 on_linkdown；
+    ///       客户端拒绝 = 连接曾经建立过 → 投递 on_linkdown。
+    static void deliver_to_handler(const std::shared_ptr<Conn::Impl>& state,
+                                    const std::shared_ptr<Conn>& ep,
+                                    bool server_side)
+    {
+        std::shared_ptr<Linkable> handler_owner;
+        try {
+            handler_owner = state->linkable.lock();
+        } catch (...) {
+            handler_owner = std::shared_ptr<Linkable>();
+        }
+
+        if (!handler_owner) {
+            // 无订阅者：立即关闭（不计入 linkdown，因为从未交给业务）。
+            state->do_close(make_boost_error_code(NetErrc::not_connected));
+            return;
+        }
+
+        std::shared_ptr<ConnHandler> h;
+        std::shared_ptr<Linkable> lb = handler_owner;
+        std::shared_ptr<Conn> ep_arg = ep;
+        // on_accept / on_linkup 包 try/catch（异常 → 视为拒绝）。
+        const bool callback_ok = invoke_user([lb, ep_arg, server_side, &h]() {
+            h = server_side ? lb->on_accept(*ep_arg) : lb->on_linkup(*ep_arg);
+            return true;
+        });
+
+        if (!callback_ok || !h) {
+            state->handler.reset();
+            state->handler_inited = false;
+            state->link_established = server_side ? false : true;
+            state->do_close(make_boost_error_code(NetErrc::not_connected));
+            return;
+        }
+
+        state->handler = h;
+        state->handler_inited = false;
+        state->link_established = true;
+
+        std::shared_ptr<ConnHandler> h_init = h;
+        std::shared_ptr<Conn> ep_init = ep;
+        // on_open 包 try/catch（异常 → 按 false 处理）。
+        const bool inited = invoke_user([h_init, ep_init]() {
+            return h_init->on_open(ep_init);
+        });
+        if (!inited) {
+            state->handler_inited = false;
+            state->do_close(make_boost_error_code(NetErrc::not_connected));
+            return;
+        }
+        state->handler_inited = true;
+    }
+
+    /// 在 Conn 的 io 线程上启动接管流程（TLS 下先握手）。
+    ///
+    /// @param[in] ep          刚创建并登记好的连接。
+    /// @param[in] server_side true = accept 侧，false = connect 侧。
+    void takeover(const std::shared_ptr<Conn>& ep, bool server_side)
+    {
+        if (!ep) {
+            return;
+        }
+        std::shared_ptr<Conn::Impl> state = ep->m_impl;
+        if (!state) {
+            return;
+        }
+        // 写入时机 = 任何 IO 开始之前（与 linger_zero / linkable 同一套约定）。
+        state->server_side = server_side;
+
+        // 握手并发配额：由 Mechanism 统一记账，Conn 只管取/还。
+        if (cfg.max_inflight_tls_handshakes > 0) {
+            const std::size_t cap = cfg.max_inflight_tls_handshakes;
+            std::weak_ptr<Impl> weak_self = weak_self_;
+            state->acquire_handshake_slot_hook = [weak_self, cap]() -> bool {
+                std::shared_ptr<Impl> self = weak_self.lock();
+                if (!self) {
+                    return false;
+                }
+                const std::size_t prev =
+                    self->inflight_handshakes.fetch_add(1, std::memory_order_acq_rel);
+                if (prev >= cap) {
+                    self->inflight_handshakes.fetch_sub(1, std::memory_order_acq_rel);
+                    return false;   // 已达上限：拒绝，不排队
+                }
+                return true;
+            };
+            state->release_handshake_slot_hook = [weak_self]() {
+                std::shared_ptr<Impl> self = weak_self.lock();
+                if (!self) {
+                    return;
+                }
+                const std::size_t prev =
+                    self->inflight_handshakes.fetch_sub(1, std::memory_order_acq_rel);
+                if (prev == 0) {
+                    // 防御：不该出现"还的次数多于取"的情况，纠偏到 0。
+                    self->inflight_handshakes.store(0, std::memory_order_release);
+                }
+            };
+        }
+
+        // ★ 强自持：任务捕获 Conn 与 Impl 的**强引用** ——
+        //   接管流程（握手 / on_accept / on_open）**必定执行**，不会因为
+        //   "调用方恰好先放手"而丢失（那会让连接卡在既没被接管、
+        //   也没被关闭的悬空状态）。
+        //
+        // 注意：lambda 内**先复制为局部变量**再供嵌套 lambda 使用。MSVC 对
+        // "外层显式捕获 + 内层 [&] 引用该捕获名"会歧义解析（报 C2039 之类）。
+        state->post([state, ep_copy = ep, server_side]() {
+            std::shared_ptr<Conn::Impl> state_copy = state;
+            std::shared_ptr<Conn> ep_arg = ep_copy;
+            state_copy->establish([state_copy, ep_arg, server_side]() {
+                Impl::deliver_to_handler(state_copy, ep_arg, server_side);
+            });
+        });
     }
 };
 
@@ -468,6 +682,22 @@ std::error_code Mechanism::listen(const Address& addr,
                                             std::uint32_t backlog,
                                             std::shared_ptr<void> user_ctx)
 {
+    return listen_impl(addr, std::move(linkable), backlog, std::move(user_ctx), std::nullopt);
+}
+
+std::error_code Mechanism::listen(const Address& addr,
+                                            std::weak_ptr<Linkable> linkable,
+                                            const ListenOptions& opts)
+{
+    return listen_impl(addr, std::move(linkable), opts.backlog, opts.user_ctx, opts.tls);
+}
+
+std::error_code Mechanism::listen_impl(const Address& addr,
+                                            std::weak_ptr<Linkable> linkable,
+                                            std::uint32_t backlog,
+                                            std::shared_ptr<void> user_ctx,
+                                            const std::optional<TlsConfig>& tls)
+{
     if (!m_impl || !m_impl->pool) {
         return make_boost_error_code(NetErrc::not_initialized);
     }
@@ -476,6 +706,20 @@ std::error_code Mechanism::listen(const Address& addr,
     if (!m_impl->pool->running()) {
         return make_boost_error_code(NetErrc::not_initialized);
     }
+
+    // 0) TLS 配置先落地成 SSL_CTX（失败就直接返回，不留半个监听器）。
+    //
+    //    放在判重之前：配置错误是"调用方写错了"，与"地址已被占用"无关，
+    //    不应该先占位再回滚。
+    TlsContextPtr tls_ctx;
+    {
+        error_code_t tls_ec = make_tls_context(tls, /*server=*/true, tls_ctx);
+        if (tls_ec) {
+            return tls_ec;
+        }
+    }
+    const std::uint32_t handshake_timeout_ms = effective_handshake_timeout(tls);
+
     // 公共接口用 Address，内部（acceptor / 连接表键）仍用 asio endpoint。
     const endpoint_t local = detail::to_asio_endpoint(addr);
     if (local.port() == 0 && local.address().is_unspecified()) {
@@ -510,8 +754,9 @@ std::error_code Mechanism::listen(const Address& addr,
     std::weak_ptr<Linkable> lb = resolved;
 
     Acceptor::DeliverFn deliver =
-        [weak_impl, lb, user_ctx](socket_t&& sock, const endpoint_t& remote,
-                        const endpoint_t& local_addr) -> bool {
+        [weak_impl, lb, user_ctx, tls_ctx, handshake_timeout_ms](
+            socket_t&& sock, const endpoint_t& remote,
+            const endpoint_t& local_addr) -> bool {
         const std::shared_ptr<Impl> impl = weak_impl.lock();
         if (!impl) {
             return false;   // 运行时已析构：拒绝，由 Acceptor 关闭 socket
@@ -523,77 +768,23 @@ std::error_code Mechanism::listen(const Address& addr,
             use_lb = impl->resolve_linkable(lb);
         }
 
-        std::shared_ptr<Conn> ep =
-            impl->make_endpoint(std::move(sock), remote, local_addr, use_lb, user_ctx);
+        // 把裸 socket 包成传输：明文 or TLS（v0.91）。TLS 的握手不在这里做，
+        // 而是由 Conn 在它自己的 io 线程上做（带超时与并发配额）。
+        TransportPtr tr = wrap_socket(std::move(sock), tls_ctx);
+        if (!tr) {
+            return false;
+        }
+
+        std::shared_ptr<Conn> ep = impl->make_endpoint(
+            std::move(tr), remote, local_addr, use_lb, user_ctx, handshake_timeout_ms);
         if (!ep) {
             return false;
         }
 
-        std::shared_ptr<Conn::Impl> state = ep->m_impl;
-
         // 在 Conn 所在的 io 线程上执行"接管"流程：
-        //   建链成功 → on_accept 要 handler → on_init → 进入服务。
+        //   建链成功 →（TLS：先握手）→ on_accept 要 handler → on_open → 进入服务。
         // 全部在锁外、在该连接的 io 线程内（A-05 / A-06 的规避点）。
-        //
-        // 注意：lambda 内**先复制为局部变量**再供嵌套 lambda 使用。MSVC 对
-        // "外层显式捕获 + 内层 [&] 引用该捕获名"会歧义解析（报出
-        // 'C2039 __this is not a member of std::shared_ptr' 之类的连锁错误）。
-        //
-        // ★ 强自持：任务捕获 Conn 与 Impl 的**强引用** ——
-        //   接管流程（on_accept / on_init）**必定执行**，不会因为
-        //   "调用方恰好先放手"而丢失（那会让连接卡在既没被接管、
-        //   也没被关闭的悬空状态）。
-        state->post([self_state = state, self_ep = ep]() {
-
-            std::shared_ptr<Linkable> handler_owner;
-            try {
-                handler_owner = self_state->linkable.lock();
-            } catch (...) {
-                handler_owner = std::shared_ptr<Linkable>();
-            }
-
-            if (!handler_owner) {
-                // 无订阅者：立即关闭（不计入 linkdown，因为从未交给业务）。
-                self_state->do_close(make_boost_error_code(NetErrc::not_connected));
-                return;
-            }
-
-            std::shared_ptr<ConnHandler> h;
-            std::shared_ptr<Linkable> lb = handler_owner;
-            std::shared_ptr<Conn> ep_arg = self_ep;
-            // on_accept 包 try/catch（异常 → 视为拒绝）。
-            const bool callback_ok = invoke_user([lb, ep_arg, &h]() {
-                h = lb->on_accept(*ep_arg);
-                return true;
-            });
-
-            if (!callback_ok || !h) {
-                // 拒绝：关闭，不投递 on_linkdown（从未"连接成功"给业务）。
-                self_state->handler.reset();
-                self_state->handler_inited = false;
-                self_state->link_established = false;
-                self_state->do_close(make_boost_error_code(NetErrc::not_connected));
-                return;
-            }
-
-            self_state->handler = h;
-            self_state->handler_inited = false;
-            self_state->link_established = true;
-
-            std::shared_ptr<ConnHandler> h_init = h;
-            std::shared_ptr<Conn> ep_init = self_ep;
-            // on_open 包 try/catch（异常 → 按 false 处理）。
-            const bool inited = invoke_user([h_init, ep_init]() {
-                return h_init->on_open(ep_init);
-            });
-            if (!inited) {
-                // 初始化失败：关闭；on_close 不调用（因为 on_open 没有成功）。
-                self_state->handler_inited = false;
-                self_state->do_close(make_boost_error_code(NetErrc::not_connected));
-                return;
-            }
-            self_state->handler_inited = true;
-        });
+        impl->takeover(ep, /*server_side=*/true);
         return true;
     };
 
@@ -807,6 +998,8 @@ struct ConnectOp {
     std::weak_ptr<Linkable>              linkable;
     std::string                          key;         ///< pending_connects 的键
     std::shared_ptr<void>                user_ctx;    ///< 透传给新建连接
+    TlsContextPtr                        tls_ctx;     ///< 空 = 明文
+    std::uint32_t                        handshake_timeout_ms = 0;
     std::atomic<bool>                    finished{false};
 
     ConnectOp(io_context_t& ioc, std::shared_ptr<Mechanism::Impl> impl_in,
@@ -875,6 +1068,25 @@ std::error_code Mechanism::connect(const Address& remote_addr,
                                              const Address& local_addr,
                                              std::shared_ptr<void> user_ctx)
 {
+    return connect_impl(remote_addr, std::move(linkable), timeout_ms, local_addr,
+                        std::move(user_ctx), std::nullopt);
+}
+
+std::error_code Mechanism::connect(const Address& remote_addr,
+                                             std::weak_ptr<Linkable> linkable,
+                                             const ConnectOptions& opts)
+{
+    return connect_impl(remote_addr, std::move(linkable), opts.timeout_ms, opts.local,
+                        opts.user_ctx, opts.tls);
+}
+
+std::error_code Mechanism::connect_impl(const Address& remote_addr,
+                                             std::weak_ptr<Linkable> linkable,
+                                             std::uint32_t timeout_ms,
+                                             const Address& local_addr,
+                                             std::shared_ptr<void> user_ctx,
+                                             const std::optional<TlsConfig>& tls)
+{
     if (!m_impl || !m_impl->pool) {
         return make_boost_error_code(NetErrc::not_initialized);
     }
@@ -882,6 +1094,18 @@ std::error_code Mechanism::connect(const Address& remote_addr,
     if (!m_impl->pool->running()) {
         return make_boost_error_code(NetErrc::not_initialized);
     }
+
+    // TLS 配置先落地成 SSL_CTX：客户端也会检查配置文件（CA / pin 格式）。
+    // 放在最前面，保证"配置错误"不会留下半个在途 connect。
+    TlsContextPtr tls_ctx;
+    {
+        error_code_t tls_ec = make_tls_context(tls, /*server=*/false, tls_ctx);
+        if (tls_ec) {
+            return tls_ec;
+        }
+    }
+    const std::uint32_t handshake_timeout_ms = effective_handshake_timeout(tls);
+
     // 公共接口用 Address，内部仍用 asio endpoint。
     const endpoint_t remote = detail::to_asio_endpoint(remote_addr);
     const endpoint_t local  = detail::to_asio_endpoint(local_addr);
@@ -913,6 +1137,11 @@ std::error_code Mechanism::connect(const Address& remote_addr,
         erase_pending_connect(m_impl, key);
         return make_boost_error_code(NetErrc::not_initialized);
     }
+
+    // TLS 上下文与握手参数随 op 一起走：connect 完成回调里要用它们把
+    // 已连接的 socket 包成 TLS 传输。
+    op->tls_ctx = tls_ctx;
+    op->handshake_timeout_ms = handshake_timeout_ms;
 
     // 把 op 填进账本（占位值换成真对象）。若期间 close_all() 已经扫过一遍、
     // 把键删了，说明这条 connect 已被放弃 —— 直接失败返回，不发出去。
@@ -996,8 +1225,14 @@ std::error_code Mechanism::connect(const Address& remote_addr,
         const endpoint_t local_addr = op->sock.local_endpoint(addr_ec);
         const endpoint_t effective_remote = addr_ec ? op->remote : remote_addr;
 
+        // 把已连接的 socket 包成传输（明文 or TLS）。TLS 握手由 Conn 在
+        // 自己的 io 线程上完成，因此这里的 on_linkup 语义变成
+        // "TCP 建链 + TLS 握手都成功之后"。
+        TransportPtr tr = wrap_socket(std::move(op->sock), op->tls_ctx);
+
         std::shared_ptr<Conn> ep = impl->make_endpoint(
-            std::move(op->sock), effective_remote, local_addr, op->linkable, op->user_ctx);
+            std::move(tr), effective_remote, local_addr, op->linkable, op->user_ctx,
+            op->handshake_timeout_ms);
         if (!ep) {
             // ★ 不能只 return：连接对象造不出来（id 耗尽 / 其它创建失败），
             //   但应用还在等 on_linkfail。"失败可观察"是本库的卖点。
@@ -1006,8 +1241,8 @@ std::error_code Mechanism::connect(const Address& remote_addr,
             //   置 true，它的幂等守卫会立即返回，把通知吞掉（旧实现的 bug）。
             //   这里直接收尾：关 socket + 恰好一次通知。pending 记录已在
             //   上面摘除、定时器已 cancel，无需重复。
-            //   （id 耗尽时 make_endpoint 未取走 socket 所有权，它仍开着；
-            //   其它失败路径 socket 已被移走，close_socket_noexcept 幂等安全。）
+            //   （socket 已被 wrap_socket 移入传输并在其析构时关闭；
+            //    close_socket_noexcept 对已移走的 socket 幂等安全。）
             close_socket_noexcept(op->sock);
             std::shared_ptr<Linkable> lb;
             try {
@@ -1023,50 +1258,10 @@ std::error_code Mechanism::connect(const Address& remote_addr,
             }
             return;
         }
-        std::shared_ptr<Conn::Impl> state = ep->m_impl;
 
         // 接管流程：全部在 Conn 所在的 io 线程内、锁外执行。
-        // ★ 强自持：同 accept 侧 —— 接管流程必定执行。
-        state->post([self_state = state, self_ep = ep]() {
-            std::shared_ptr<Linkable> handler_owner;
-            try {
-                handler_owner = self_state->linkable.lock();
-            } catch (...) {
-                handler_owner = std::shared_ptr<Linkable>();
-            }
-            if (!handler_owner) {
-                self_state->do_close(make_boost_error_code(NetErrc::not_connected));
-                return;
-            }
-
-            std::shared_ptr<ConnHandler> handler;
-            const bool callback_ok = invoke_user([&]() {
-                handler = handler_owner->on_linkup(*self_ep);
-                return true;
-            });
-
-            if (!callback_ok || !handler) {
-                // 拒绝：连接已建立过 → 关闭并投递 on_linkdown。
-                self_state->handler.reset();
-                self_state->handler_inited = false;
-                self_state->link_established = true;
-                self_state->do_close(make_boost_error_code(NetErrc::not_connected));
-                return;
-            }
-
-            self_state->handler = handler;
-            self_state->handler_inited = false;
-            self_state->link_established = true;
-
-            const bool inited = invoke_user(
-                [&]() { return handler->on_open(self_ep); }, false);
-            if (!inited) {
-                self_state->handler_inited = false;
-                self_state->do_close(make_boost_error_code(NetErrc::not_connected));
-                return;
-            }
-            self_state->handler_inited = true;
-        });
+        // ★ 强自持：同 accept 侧 —— 接管流程（握手 / on_linkup / on_open）必定执行。
+        impl->takeover(ep, /*server_side=*/false);
     });
 
     // 4b) connect 已发起，现在才挂超时定时器 —— 而且**投递到 io 线程去挂**。

@@ -192,6 +192,11 @@ struct ConstBuf {
 ///  * @c link_closed        连接已关闭（对端关闭、本端 close()、或 IO 错误导致关闭）。
 ///  * @c accept_failed      accept 环节失败（例如达到 fd 上限、监听 socket 失效）。
 ///  * @c keepalive_timeout  保活超时：接收侧或发送侧在约定时间内未收到/未发出数据。
+///  * @c tls_handshake_failed   TLS 握手失败（协议不符、对端拒绝、并发配额已满等）。
+///  * @c tls_handshake_timeout  TLS 握手在约定时间内未完成。
+///  * @c tls_cert_rejected      对端证书未通过校验（指纹不匹配 / 链不可信 / 主机名不符）。
+///  * @c tls_unsupported        本构建未启用 TLS（`NETMECH_TLS=OFF`），或该接口不支持。
+///  * @c tls_truncated          对端在未发送 close_notify 的情况下关闭了 TLS 连接（截断）。
 enum class NetErrc {
     ok = 0,
     not_initialized,
@@ -206,6 +211,11 @@ enum class NetErrc {
     handler_rejected,      ///< handler 工厂返回空，或 on_open 返回 false
     cancelled,             ///< 被显式取消
     datagram_truncated,    ///< UDP 报文超过接收缓冲，已被截断（仅该报文受影响）
+    tls_handshake_failed,  ///< TLS 握手失败
+    tls_handshake_timeout, ///< TLS 握手超时
+    tls_cert_rejected,     ///< 对端证书被拒绝（v0.91：指纹 pin / 链校验 / 主机名）
+    tls_unsupported,       ///< 未启用 TLS 或该接口不支持
+    tls_truncated,         ///< 对端未发 close_notify 就断开（可能被截断）
 };
 
 // -----------------------------------------------------------------------------

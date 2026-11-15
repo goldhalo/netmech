@@ -155,6 +155,12 @@ enum class NetErrc {
     handler_rejected,      // handler 工厂返回空 / on_open 返回 false
     cancelled,             // 被显式取消
     datagram_truncated,    // UDP 报文超过接收缓冲，已截断（仅该报文）
+    // ---- v0.91：TLS ----
+    tls_handshake_failed,  // 握手失败（协议不符 / 对端拒绝 / 并发配额已满）
+    tls_handshake_timeout, // 握手超时
+    tls_cert_rejected,     // 对端证书被拒（指纹 pin / 链校验 / 主机名）
+    tls_unsupported,       // 本构建未启用 TLS，或该接口不支持
+    tls_truncated,         // 对端未发 close_notify 就断开（可能被截断）
 };
 ```
 
@@ -402,15 +408,18 @@ public:
     virtual std::shared_ptr<ConnHandler> on_linkup(Conn& c)      { return nullptr; }
     virtual void on_linkdown(Conn& c)                            {}
     virtual void on_linkfail(const Address& remote, std::error_code ec) {}
+    // v0.91：服务端在"接管前"协商失败（TLS 握手失败/超时/配额满）
+    virtual void on_accept_failed(const Address& remote, std::error_code ec) {}
 };
 ```
 
 | 回调 | 触发时机 |
 |---|---|
-| `on_accept` | **服务端**：accept 到一条新连接 |
-| `on_linkup` | **客户端**：connect 成功 |
+| `on_accept` | **服务端**：accept 到一条新连接（TLS 下 = 握手已成功） |
+| `on_linkup` | **客户端**：connect 成功（TLS 下 = 握手已成功） |
 | `on_linkdown` | 曾经接管的连接关闭（此前必然 `on_accept`/`on_linkup` 过） |
-| `on_linkfail` | 客户端 connect 失败（超时 / 拒绝 / 不可达） |
+| `on_linkfail` | 客户端 connect 失败（超时 / 拒绝 / 不可达 / TLS 握手失败） |
+| `on_accept_failed` | **服务端**：接管前的协商失败（TLS 握手失败/超时/配额满）；**不会**再有 `on_accept` 或 `on_linkdown` |
 
 ### 返回值语义（`on_accept` / `on_linkup`）
 
@@ -440,11 +449,12 @@ mech->listen(addr, std::weak_ptr<Linkable>(linkable));
 
 ```cpp
 struct Config {
-    std::size_t send_queue_bytes = 2 * 1024 * 1024;   // 单连接发送队列字节上限
-    std::size_t send_queue_count = 256;               // 单连接发送队列笔数上限
-    bool        tcp_nodelay      = true;              // 关闭 Nagle
-    bool        linger_zero      = false;             // true = close 时发 RST
-    std::size_t socket_buf_size  = 256 * 1024;        // SO_SNDBUF / SO_RCVBUF，0=不设
+    std::size_t   send_queue_bytes = 2 * 1024 * 1024; // 单连接发送队列字节上限
+    std::size_t   send_queue_count = 256;             // 单连接发送队列笔数上限
+    bool          tcp_nodelay      = true;            // 关闭 Nagle
+    bool          linger_zero      = false;           // true = close 时发 RST
+    std::size_t   socket_buf_size  = 256 * 1024;      // SO_SNDBUF / SO_RCVBUF，0=不设
+    std::size_t   max_inflight_tls_handshakes = 64;   // v0.91：并发 TLS 握手上限（0=不限）
 };
 ```
 
@@ -487,6 +497,23 @@ std::error_code listen(const Address& local,
 
 绑定成功后可用 `local_address_of(local)` 拿到**实际**地址（端口 0 时必需）。
 
+**带选项的重载（v0.91）**：
+
+```cpp
+struct ListenOptions {
+    std::uint32_t            backlog  = kDefaultBacklog;
+    std::shared_ptr<void>    user_ctx;
+    std::optional<TlsConfig> tls;      // 有值 = 该监听器只接受 TLS
+};
+std::error_code listen(const Address& local,
+                       std::weak_ptr<Linkable> linkable,
+                       const ListenOptions& opts);
+```
+
+`opts.tls` 有值时的额外失败原因：`invalid_argument`（缺证书/私钥、指纹格式错）、
+`tls_unsupported`（本构建未启用 TLS）、以及证书文件打不开时的底层错误。
+详见 [`TLS.md`](TLS.md)。
+
 ### 5.4 连接
 
 ```cpp
@@ -502,11 +529,32 @@ std::error_code connect(const Address& remote,
 | 参数 | 说明 |
 |---|---|
 | `remote` | 目标地址，**不能是通配地址或端口 0** |
-| `timeout_ms` | 握手超时 |
+| `timeout_ms` | **TCP 建链**超时（TLS 握手有自己的超时，见 TLS 重载） |
 | `local` | 本地绑定地址（默认由系统选源端口） |
 | `user_ctx` | 原样挂到新连接上 |
 
 > 同一个目标地址**可以并发发起多个 connect**（连接池、并发探测）。
+
+**带选项的重载（v0.91）**：
+
+```cpp
+struct ConnectOptions {
+    std::uint32_t            timeout_ms = 3000;   // 只覆盖 TCP 建链
+    Address                  local{};
+    std::shared_ptr<void>    user_ctx;
+    std::optional<TlsConfig> tls;                 // 有值 = 该连接使用 TLS
+};
+std::error_code connect(const Address& remote,
+                        std::weak_ptr<Linkable> linkable,
+                        const ConnectOptions& opts);
+```
+
+`opts.tls` 有值时的语义变化：
+
+* `on_linkup` 在 **TLS 握手成功之后**才触发；
+* 握手失败走 `on_linkfail`（`tls_handshake_failed` / `tls_handshake_timeout` /
+  `tls_cert_rejected`），**没有** `on_linkdown`；
+* 客户端"既没 pin 也没开链校验"的配置会被直接拒绝（`invalid_argument`）。
 
 ### 5.5 运行时信息
 

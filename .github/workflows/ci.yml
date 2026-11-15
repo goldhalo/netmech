@@ -113,6 +113,39 @@ jobs:
       - name: 测试
         run: ctest --test-dir build --output-on-failure --timeout 120
 
+  # ---------------------------------------------------------------------------
+  # TLS（v0.91，可选能力，默认 OFF）
+  #
+  # OpenSSL **不由本仓提供**：Linux 用发行版 libssl-dev，Windows 用 choco 装的
+  # 开发包；两边都走标准 find_package(OpenSSL)，行为一致。
+  # 这里有 3 条真实握手用例（自签 + 指纹 pin / pin 不匹配 / 明文打 TLS 端口），
+  # 只在 NETMECH_TLS=ON 的构建里编译。
+  # ---------------------------------------------------------------------------
+  linux-tls:
+    name: Linux / gcc / TLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具（含 OpenSSL 开发包）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libssl-dev
+
+      - name: 配置
+        run: |
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DNETMECH_TLS=ON \
+                -DNETMECH_WARNINGS_AS_ERRORS=ON
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
   windows:
     name: Windows / MSVC / ${{ matrix.build_type }}
     runs-on: windows-latest
@@ -218,6 +251,49 @@ jobs:
       - name: 测试
         shell: pwsh
         run: ctest --test-dir build --output-on-failure --timeout 120
+
+  # ---------------------------------------------------------------------------
+  # Windows TLS：用 choco 装的 OpenSSL 开发包（与 Linux 的 libssl-dev 对等）
+  # ---------------------------------------------------------------------------
+  windows-tls:
+    name: Windows / MSVC / TLS
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 OpenSSL（开发包）
+        shell: pwsh
+        run: |
+          choco install openssl --yes --no-progress
+          $root = Get-ChildItem "C:\Program Files\OpenSSL*" -Directory -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+          if (-not $root) { Write-Host "::error::找不到 OpenSSL 安装目录"; exit 1 }
+          Write-Host "OpenSSL: $($root.FullName)"
+          "OPENSSL_ROOT=$($root.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: 配置 MSVC 环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 配置
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug `
+                -DNETMECH_TLS=ON -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT" `
+                -DNETMECH_WARNINGS_AS_ERRORS=ON
+
+      - name: 构建
+        shell: pwsh
+        run: cmake --build build --parallel
+
+      - name: 测试
+        shell: pwsh
+        run: |
+          # 运行期需要 libssl-3-x64.dll / libcrypto-3-x64.dll
+          $env:PATH = "$env:OPENSSL_ROOT\bin;$env:PATH"
+          ctest --test-dir build --output-on-failure --timeout 300
 
   # ---------------------------------------------------------------------------
   # 基准 smoke（非门禁）：只验证 bench 能构建、能跑出数值，不比较性能数字。
@@ -358,6 +434,81 @@ jobs:
         run: ctest --test-dir build-tsan --output-on-failure --timeout 300
 
   # ---------------------------------------------------------------------------
+  # TLS + ASan/UBSan：TLS 实现里有大量"长度/偏移由对端决定"的解析（记录层、
+  # 证书摘要、指纹比对），越界与下溢最值得用 sanitizer 咬一遍。
+  # ---------------------------------------------------------------------------
+  sanitizers-tls:
+    name: ASan + UBSan / TLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具（含 OpenSSL 开发包）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libssl-dev
+
+      - name: 配置（Debug + sanitizer + TLS）
+        run: |
+          cmake -S . -B build-san -G Ninja \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DNETMECH_TLS=ON \
+                -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+                -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+                -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+                -DNETMECH_BUILD_TESTS=ON
+
+      - name: 构建
+        run: cmake --build build-san --parallel
+
+      - name: 测试
+        env:
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          LSAN_OPTIONS: detect_leaks=0
+        run: ctest --test-dir build-san --output-on-failure --timeout 300
+
+  # ---------------------------------------------------------------------------
+  # TLS + TSan
+  #
+  # TLS 的握手状态机跨"发起线程 / io 线程"，且 TlsContext（SSL_CTX）是
+  # 监听器与每条连接共享的 —— 这类共享最容易漏同步。
+  # ---------------------------------------------------------------------------
+  tsan-tls:
+    name: TSan / TLS
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具（含 OpenSSL 开发包）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libssl-dev
+
+      - name: 配置（Debug + TSan + TLS）
+        run: |
+          cmake -S . -B build-tsan -G Ninja \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DNETMECH_TLS=ON \
+                -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g -O1" \
+                -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g -O1" \
+                -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
+                -DNETMECH_BUILD_TESTS=ON \
+                -DNETMECH_BUILD_EXAMPLES=OFF
+
+      - name: 构建
+        run: cmake --build build-tsan --parallel
+
+      - name: 测试
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:history_size=4
+        run: ctest --test-dir build-tsan --output-on-failure --timeout 300
+
+  # ---------------------------------------------------------------------------
   # 质量门禁
   # ---------------------------------------------------------------------------
   quality:
@@ -386,16 +537,41 @@ jobs:
           if [ $FAIL -eq 1 ]; then exit 1; fi
           echo "✅ 未发现 C++20 构造"
 
-      - name: 检查不得引入 Boost 依赖
+      - name: 检查第三方头依赖边界（Boost / OpenSSL）
         run: |
-          # 只看 #include：注释里写 boost:: 是在讲"为什么不用它"。
-          # 注意 asio 不在此列 —— 本库用的就是 thirdparty 里那份独立 Asio。
-          if grep -rnE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<(boost|openssl)/' \
+          # 只看 #include：注释里提到 boost:: / openssl 是在讲"为什么不用它"。
+          fail=0
+
+          # 1) 任何地方都不许引 Boost（本库只用 thirdparty 里的独立 Asio）。
+          if grep -rnE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<boost/' \
                include/ src/ example/ test/ --include='*.hpp' --include='*.cpp'; then
-            echo "❌ 发现有 boost / openssl 的 #include（本库只用 thirdparty 里的独立 Asio）"
-            exit 1
+            echo "❌ 发现 boost 的 #include（本库只用 thirdparty 里的独立 Asio）"
+            fail=1
           fi
-          echo "✅ 无 Boost 依赖"
+
+          # 2) 对外头文件一行第三方头都不许引 —— 装出去的包不带这些依赖。
+          if grep -rnE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<(asio|asio\.hpp|openssl)/' \
+               include/ --include='*.hpp'; then
+            echo "❌ 对外头文件引了 asio / openssl"
+            fail=1
+          fi
+
+          # 3) OpenSSL 只允许出现在 TLS 实现与 TLS 测试里，且必须落在
+          #    NETMECH_HAS_TLS 保护下（-DNETMECH_TLS=OFF 时一行都不该进来）。
+          for f in $(grep -rlE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<openssl/' \
+                       src/ test/ --include='*.hpp' --include='*.cpp' || true); do
+            case "$f" in
+              src/tls_internal.hpp|src/tls_transport.cpp|test/test_tls_e2e.cpp) ;;
+              *) echo "❌ $f 不在 OpenSSL 允许清单内"; fail=1; continue ;;
+            esac
+            if ! grep -q 'NETMECH_HAS_TLS' "$f"; then
+              echo "❌ $f 引了 openssl 却没有 NETMECH_HAS_TLS 保护（OFF 构建会编不过）"
+              fail=1
+            fi
+          done
+
+          [ $fail -eq 0 ] || exit 1
+          echo "✅ 第三方依赖边界正常"
 
       - name: 检查 thirdparty 完整性
         run: |

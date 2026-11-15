@@ -5,8 +5,10 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](#构建)
 
 > 基于 **C++17 + 独立 Asio** 的 TCP / UDP 通信库。
-> **零第三方依赖**：Asio 随仓库提供，`git clone` 即可构建，产物不链接任何第三方 DLL。
+> **默认零第三方依赖**：Asio 随仓库提供，`git clone` 即可构建，产物不链接任何第三方 DLL。
 > **对外头文件不依赖 Asio** —— 装出去的包只有本库自己的头，使用者不需要自备 Asio。
+> **TLS 是可选能力**（v0.91 起）：**默认不编**；显式 `-DNETMECH_TLS=ON` 才引入
+> OpenSSL，提供**进程内 TLS 终结**。不编时明文功能与产物完全不变。
 
 ---
 
@@ -14,7 +16,7 @@
 
 | | |
 |---|---|
-| **零依赖** | 独立 Asio（header-only）随仓库提供，不需要 Boost，不需要 vcpkg；**它只在本仓编译时用，不随包安装** |
+| **零依赖** | 独立 Asio（header-only）随仓库提供，不需要 Boost，不需要 vcpkg；**它只在本仓编译时用，不随包安装**。TLS 是**可选**项（唯一会引入的外部库是 OpenSSL） |
 | **一个对象一条连接** | TCP 是 `Conn`，UDP 是 `UdpEndpoint`，没有隐藏的"会话表"要维护 |
 | **回调天然串行** | 每条连接绑定一个 `io_context`，**1 context = 1 线程**，同一连接的回调不会并发 |
 | **反压语义明确** | `write()` 返回 `false` 表示"没受理"，不是出错，也**不会断链** |
@@ -134,6 +136,53 @@ int main() {
 ```
 
 详细说明与验证数据见 [`docs/packaging.md`](docs/packaging.md) 的「多库共享 netmech」一节。
+
+## TLS（进程内终结，v0.91）
+
+`listen()` / `connect()` 传一个 `TlsConfig`，业务拿到的 `Conn` 就**已经是明文流** ——
+`ConnHandler` 一行都不用改。同一个 `Mechanism` 上明文与 TLS 可以共存。
+
+```cpp
+TlsConfig tls;
+tls.cert_chain_file  = "server.crt";       // 服务端必需（PEM，可含中间证书）
+tls.private_key_file = "server.key";
+tls.pinned_sha256    = "AB:CD:...";        // 客户端：对端证书的 SHA-256（自签场景）
+
+ListenOptions  lo;  lo.tls  = tls;         // 服务端
+ConnectOptions co;  co.tls  = tls;         // 客户端
+mech->listen (Address::any(8443), link, lo);
+mech->connect(Address{"10.0.0.5", 8443}, link, co);
+```
+
+三条要知道的：
+
+1. **`on_accept` / `on_linkup` 在握手成功之后才触发**；握手失败走
+   `Linkable::on_accept_failed()`（服务端）/ `on_linkfail()`（客户端），
+   **不会**有 `on_linkdown`。
+2. **客户端必须 pin 或开链校验**，两者都没有会被 `connect()` 直接拒绝 ——
+   不允许"以为加密了其实谁都能中间人"。默认走**自签 + 指纹 pin**。
+3. **`close_notify` 是尽力而为**（`close()` 同步、不阻塞）；反过来，收到不带
+   `close_notify` 的 EOF 会映射成 `NetErrc::tls_truncated`，不会静默当普通 EOF。
+
+构建：**默认不编** TLS（零第三方依赖）；显式 `-DNETMECH_TLS=ON` 才编，
+**OpenSSL 必须由你先装好**（Windows / Linux 行为一致），缺了直接报错：
+
+```bash
+# Linux
+sudo apt install -y libssl-dev
+cmake -S . -B build -DNETMECH_TLS=ON
+
+# Windows（vcpkg / 官方安装包皆可），路径告诉 CMake
+cmake -S . -B build -DNETMECH_TLS=ON -DOPENSSL_ROOT_DIR=<OpenSSL 前缀>
+```
+
+默认是**动态链接**，两个平台对等：**我们只发自己的库**（`netmech.dll` /
+`libnetmech.so`），OpenSSL 运行时由使用方提供 —— Windows 是
+`libssl-3-x64.dll` + `libcrypto-3-x64.dll`（PATH 或 exe 同目录），
+Linux 是系统的 `libssl.so.3`。想要单文件交付就把 OpenSSL 静态链进去
+（`-DOPENSSL_USE_STATIC_LIBS=TRUE`，注意 CRT 必须同为 `/MD`）。
+完整说明（指纹怎么算、失败怎么观察、已知取舍、手工验证）见
+[`docs/TLS.md`](docs/TLS.md)。
 
 ## 三个必须知道的约束
 
@@ -335,6 +384,7 @@ docs/               设计文档与 API 说明
 | 文档 | 内容 |
 |---|---|
 | [`docs/API.md`](docs/API.md) | 逐个接口的语义、返回值、失败原因 |
+| [`docs/TLS.md`](docs/TLS.md) | 进程内 TLS：配置、指纹 pin、握手语义、已知取舍、手工验证 |
 | [`docs/design/overview-design.md`](docs/design/overview-design.md) | 设计取舍、线程模型、压测数据、实施记录 |
 
 ---

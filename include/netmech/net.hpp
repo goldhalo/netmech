@@ -56,6 +56,11 @@
 #include "netmech/stats.hpp"
 #include "netmech/runtime.hpp"
 
+// TLS 配置（v0.91）。只是纯 C++ 值类型：
+//   * `NETMECH_TLS=OFF` 的构建里它照样存在，只是传了会得到 tls_unsupported；
+//   * 公共头仍然不引 asio / OpenSSL。
+#include "netmech/tls.hpp"
+
 // 协议抽象（P1：为 UDP 铺路；对既有 TCP 用户完全无影响）
 
 // 抽象接口

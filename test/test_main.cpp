@@ -13,6 +13,8 @@
 // ============================================================================
 #include "test_framework.hpp"
 
+#include <netmech/common.hpp>
+
 #include <cstdio>
 #include <exception>
 #include <string>
@@ -78,7 +80,21 @@ int main(int argc, char** argv)
 
     try
     {
-        return netmech_test::run_all(filter);
+        const int rc = netmech_test::run_all(filter);
+
+        // ★ 退出前停掉进程级 io 池。
+        //
+        // 不这么做的话，进程退出时可能**还有 io 线程在跑**，而 OpenSSL 在
+        // atexit 里会释放它自己的全局锁（CRYPTO_THREAD_lock_free）。两者撞在
+        // 一起，TSan 会在 `exit()` 阶段报一条 data race —— 报告指向
+        // libcrypto 而非本库代码（实测：TLS 构建的 TSan job 里 96 个用例全绿，
+        // 只在进程退出阶段冒一条 CRYPTO_THREAD_lock_free）。
+        //
+        // 这也不是"为了迁就 sanitizer"：库的契约本来就要求"先关业务对象、
+        // 再停运行时"，测试进程同样应该守这条 —— 顺带把 shutdown() 路径
+        // （join 所有 io 线程）也纳入每次 CI。
+        netmech::shutdown();
+        return rc;
     }
     catch (const std::exception& e)
     {

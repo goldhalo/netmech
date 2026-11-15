@@ -23,6 +23,14 @@ if(NOT WIN32)
     find_dependency(Threads)
 endif()
 
+# v0.91：TLS 是可选能力，且 OpenSSL 一律是**对外依赖**（不做仓内自带）。
+# 这里在打包时固化成一行 if(ON)/if(OFF)：只有编了 TLS 的包才要求 OpenSSL，
+# 没编 TLS 的包不会"多要一个没编进去的依赖"。
+set(netmech_TLS_ENABLED @NETMECH_TLS_ENABLED@)
+if(@NETMECH_TLS_ENABLED@)
+    find_dependency(OpenSSL)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/netmechTargets.cmake")
 
 check_required_components(netmech)
