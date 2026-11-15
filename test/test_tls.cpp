@@ -46,7 +46,12 @@ TlsConfig server_config()
 }
 
 /// 客户端"看起来合法"的配置（自签 + 指纹 pin）。
-TlsConfig client_config()
+///
+/// ⚠ `[[maybe_unused]]` 不能去掉：它只在 `NETMECH_TLS=OFF` 的构建里被用到
+///   （断言 tls_unsupported）。TLS 打开的构建里那段分支被 `#if` 编掉，本函数
+///   就成了"定义了但没人用" —— GCC 报 `-Wunused-function`、MSVC /W4 报 C4505，
+///   配上 `-DNETMECH_WARNINGS_AS_ERRORS=ON` 直接构建失败（CI 上真实踩过）。
+[[maybe_unused]] TlsConfig client_config()
 {
     TlsConfig cfg;
     cfg.pinned_sha256 =

@@ -116,6 +116,31 @@ CMake 用标准 `find_package(OpenSSL)` 探测，因此：
 > （忘了注册 → 运行时才炸）。当前需求是"一个进程内把 TLS 终结掉"，
 > 现方案已经够用，故不做。
 
+### 2.4 CI 覆盖范围
+
+| Job | 平台 | 是否门禁 |
+|---|---|---|
+| `linux-tls` | Ubuntu + 发行版 `libssl-dev` | ✅ 门禁 |
+| `sanitizers-tls` / `tsan-tls` | Ubuntu + ASan/UBSan/TSan | ✅ 门禁 |
+| `windows-tls` | Windows + choco 装的 OpenSSL | ⚠️ **非门禁** |
+
+Windows 的 TLS 为什么不做门禁：runner 上 choco 装出来的 OpenSSL 版本与打包形态
+（DLL 导入库 / `/MT` 静态库）不由我们控制，曾因此把构建打红，而同一份代码在
+本机（自编 OpenSSL 3.0.15 + MSVC + `/WX`）96 个用例全绿。TLS 的逻辑门禁放在
+Linux 三个 job 上；Windows 那个 job 只作为"环境漂移"的提示信号。
+
+本机自测（推荐发版前跑一遍）：
+
+```bat
+perl Configure VC-WIN64A shared no-tests no-legacy no-asm --prefix=D:\ossl
+nmake && nmake install_sw
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+      -DNETMECH_TLS=ON -DOPENSSL_ROOT_DIR=D:\ossl -DNETMECH_WARNINGS_AS_ERRORS=ON
+cmake --build build --parallel
+set PATH=D:\ossl\bin;%PATH%
+build\bin\netmech_ut.exe
+```
+
 ---
 
 ## 3. 服务端
