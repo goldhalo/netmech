@@ -266,17 +266,14 @@ jobs:
   # ---------------------------------------------------------------------------
   # Windows TLS：用 choco 装的 OpenSSL 开发包（与 Linux 的 libssl-dev 对等）
   #
-  # ★ 非门禁（continue-on-error）：runner 上 choco 装出来的 OpenSSL 是哪一版、
-  #   是 DLL 导入库还是 /MT 静态库，都不由我们控制 —— 曾因这个差异构建失败，
-  #   而同一份代码在本机（自编 OpenSSL 3.0.15 + MSVC）96/96 用例全绿。
-  #   所以 Windows 的 TLS **门禁放在 Linux**（linux-tls / sanitizers-tls /
-  #   tsan-tls），这个 job 只作为"环境漂移"的信号：红了自己看一眼，别卡发版。
-  #   本机验证步骤见 docs/TLS.md §2.3。
+  # ★ 门禁。runner 上 choco 装的 OpenSSL 已经是 **4.1**，比本机（3.0.15）新，
+  #   正好帮我们提前发现新版 API 的弃用（X509_check_host 在 4.1 弃用、
+  #   一批 getter 变成返回 const）。这类问题**只影响库代码**时必须修；
+  #   只影响 test/ 的（/WX 不再作用于测试）不会让这里变红。
   # ---------------------------------------------------------------------------
   windows-tls:
     name: Windows / MSVC / TLS
     runs-on: windows-latest
-    continue-on-error: true
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4

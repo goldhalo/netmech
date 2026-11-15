@@ -122,12 +122,11 @@ CMake 用标准 `find_package(OpenSSL)` 探测，因此：
 |---|---|---|
 | `linux-tls` | Ubuntu + 发行版 `libssl-dev` | ✅ 门禁 |
 | `sanitizers-tls` / `tsan-tls` | Ubuntu + ASan/UBSan/TSan | ✅ 门禁 |
-| `windows-tls` | Windows + choco 装的 OpenSSL | ⚠️ **非门禁** |
+| `windows-tls` | Windows + choco 装的 OpenSSL | ✅ 门禁 |
 
-Windows 的 TLS 为什么不做门禁：runner 上 choco 装出来的 OpenSSL 版本与打包形态
-（DLL 导入库 / `/MT` 静态库）不由我们控制，曾因此把构建打红，而同一份代码在
-本机（自编 OpenSSL 3.0.15 + MSVC + `/WX`）96 个用例全绿。TLS 的逻辑门禁放在
-Linux 三个 job 上；Windows 那个 job 只作为"环境漂移"的提示信号。
+Windows 那个 job 装到的 OpenSSL 比本机新（runner 上已经是 **4.1**），正好提前
+暴露新版 API 的弃用；`/WX` 只作用于库与示例（见 CHANGELOG「构建策略」），
+所以"只有测试触发的弃用警告"不会让它变红，而**库代码**里的弃用必须修。
 
 本机自测（推荐发版前跑一遍）：
 
