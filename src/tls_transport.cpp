@@ -216,22 +216,12 @@ error_code_t TlsContext::verify_peer(SSL* ssl) const
         }
     }
 
-    // 2) 主机名（仅在开了链校验时做 —— pin 已经锁死了整张证书）。
-    if (cfg_.verify_certificate && !server_ && !cfg_.server_name.empty()) {
-        X509* cert = get_peer_cert(ssl);
-        if (!cert) {
-            return make_boost_error_code(NetErrc::tls_cert_rejected);
-        }
-        const int matched = X509_check_host(cert,
-                                            cfg_.server_name.c_str(),
-                                            cfg_.server_name.size(),
-                                            0,
-                                            nullptr);
-        X509_free(cert);
-        if (matched != 1) {
-            return make_boost_error_code(NetErrc::tls_cert_rejected);
-        }
-    }
+    // 2) 主机名不在这里查：已经在 TlsTransport 构造时通过
+    //    X509_VERIFY_PARAM_set1_host 交给 OpenSSL 的链校验，握手阶段就会失败
+    //    （见 TlsTransport 构造函数里的说明 —— X509_check_host 在 4.1 被弃用）。
+    //
+    //    也就是说：`verify_certificate = true` 时，主机名不匹配的握手**根本
+    //    到不了这里**，会走 on_linkfail(tls_cert_rejected)。
 
     return error_code_t{};
 }
@@ -253,6 +243,23 @@ public:
             const std::string& name = ctx_->config().server_name;
             if (!name.empty()) {
                 ::SSL_set_tlsext_host_name(ssl_.native_handle(), name.c_str());
+
+                // 主机名校验交给 OpenSSL 的**链校验**去做（握手期），
+                // 而不是握手后自己调 X509_check_host：
+                //   * X509_check_host 在 OpenSSL 4.1 被标记 deprecated，
+                //     MSVC 的 /WX 会把它变成 error C2220（CI 上真实踩到，
+                //     GitHub runner 的 choco 包已经是 4.1）；
+                //   * 走 VERIFY_PARAM 后，主机名不匹配会以
+                //     「certificate verify failed」在握手阶段失败，
+                //     由 map_ssl_error 归一化成 tls_cert_rejected。
+                if (ctx_->config().verify_certificate) {
+                    X509_VERIFY_PARAM* param = ::SSL_get0_param(ssl_.native_handle());
+                    if (param != nullptr) {
+                        ::X509_VERIFY_PARAM_set_hostflags(
+                            param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+                        ::X509_VERIFY_PARAM_set1_host(param, name.c_str(), name.size());
+                    }
+                }
             }
         }
     }
