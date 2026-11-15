@@ -48,6 +48,17 @@
 - `Conn::Impl` 的成员顺序约束从 "`pool` 在 `socket` 之前" 改为
   "`pool` 在 `transport` 之前"，理由不变（析构必须先于 io_context）。
 
+**`-Werror` / `/WX` 只作用于库本体与 `example/`，不再约束 `test/`**
+
+- 库要上生产、示例会被使用者照抄，这两处必须零告警；
+- 测试的价值是"行为能过"，而第三方头在新版本里频繁引入弃用警告
+  （OpenSSL 4.1 弃用 `X509_check_host`、4.x 把一批 getter 改成返回 `const`），
+  为这些去改测试只是拿精力跟工具链赛跑。
+- 实现上把 `/WX`、`-Werror` 从 `netmech_compile_options`（PUBLIC interface，
+  会一路传给测试/示例/下游）挪到按目标添加：`netmech` 与三个示例目标。
+- CI 里的 `NETMECH_WARNINGS_AS_ERRORS=ON` 语义随之收窄；`test/` 仍会打印告警，
+  但不再中断构建。
+
 ### 修复
 
 **`cmake --install` 在 SHARED 构建下不装 `.dll` / `.so`（打包缺口，0.90 起就存在）**

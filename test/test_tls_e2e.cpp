@@ -24,6 +24,7 @@
 #    include <openssl/x509.h>
 
 #    include <cstdio>
+#    include <ctime>
 #    include <filesystem>
 #    include <mutex>
 #    include <string>
@@ -121,20 +122,51 @@ TestCert make_self_signed()
     }
 
     bool cert_ok = (X509_set_version(x, 2) == 1);
-    cert_ok = cert_ok && (ASN1_INTEGER_set(X509_get_serialNumber(x), 1) == 1);
-    cert_ok = cert_ok && (X509_gmtime_adj(X509_getm_notBefore(x), -60) != nullptr);
-    cert_ok = cert_ok && (X509_gmtime_adj(X509_getm_notAfter(x), 3600) != nullptr);
-    cert_ok = cert_ok && (X509_set_pubkey(x, pkey) == 1);
 
-    X509_NAME* name = X509_get_subject_name(x);
-    cert_ok = cert_ok && (name != nullptr);
+    // ★ 这里一律"新建对象 → set 进去"，**不用**可变 getter
+    //   （X509_get_serialNumber / X509_getm_notBefore / X509_get_subject_name）：
+    //   OpenSSL 4.x 把其中一批改成了返回 const 指针，同一份代码在 3.x 编得过、
+    //   在 4.1 上就 C2440（CI 上真实踩过）。set 系列 API 在 1.1.0+ 一直稳定。
     if (cert_ok) {
-        cert_ok = (X509_NAME_add_entry_by_txt(
-                       name, "CN", MBSTRING_ASC,
-                       reinterpret_cast<const unsigned char*>("netmech-test"),
-                       -1, -1, 0) == 1);
-        cert_ok = cert_ok && (X509_set_issuer_name(x, name) == 1);
+        ASN1_INTEGER* serial = ASN1_INTEGER_new();
+        cert_ok = (serial != nullptr)
+                  && (ASN1_INTEGER_set(serial, 1) == 1)
+                  && (X509_set_serialNumber(x, serial) == 1);
+        if (serial != nullptr) {
+            ASN1_INTEGER_free(serial);
+        }
     }
+    if (cert_ok) {
+        ASN1_TIME* nb = ASN1_TIME_new();
+        ASN1_TIME* na = ASN1_TIME_new();
+        const std::time_t now = std::time(nullptr);
+        cert_ok = (nb != nullptr) && (na != nullptr)
+                  && (ASN1_TIME_set(nb, now - 60) != nullptr)
+                  && (ASN1_TIME_set(na, now + 3600) != nullptr)
+                  && (X509_set1_notBefore(x, nb) == 1)
+                  && (X509_set1_notAfter(x, na) == 1);
+        if (nb != nullptr) {
+            ASN1_TIME_free(nb);
+        }
+        if (na != nullptr) {
+            ASN1_TIME_free(na);
+        }
+    }
+    if (cert_ok) {
+        X509_NAME* name = X509_NAME_new();
+        cert_ok = (name != nullptr)
+                  && (X509_NAME_add_entry_by_txt(
+                          name, "CN", MBSTRING_ASC,
+                          reinterpret_cast<const unsigned char*>("netmech-test"),
+                          -1, -1, 0) == 1)
+                  && (X509_set_subject_name(x, name) == 1)
+                  && (X509_set_issuer_name(x, name) == 1);
+        if (name != nullptr) {
+            X509_NAME_free(name);
+        }
+    }
+
+    cert_ok = cert_ok && (X509_set_pubkey(x, pkey) == 1);
     cert_ok = cert_ok && (X509_sign(x, pkey, EVP_sha256()) > 0);
 
     // ---- 3) 指纹（SHA-256）----

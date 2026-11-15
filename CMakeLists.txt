@@ -60,7 +60,8 @@ endif()
 option(NETMECH_BUILD_TESTS    "构建 netmech 单元测试" ON)
 option(NETMECH_BUILD_EXAMPLES "构建 netmech 示例（echo server/client）" ON)
 option(NETMECH_BUILD_BENCH    "构建 netmech 性能基准（默认 OFF）" OFF)
-option(NETMECH_WARNINGS_AS_ERRORS "把编译告警当错误（CI 用，默认 OFF）" OFF)
+option(NETMECH_WARNINGS_AS_ERRORS
+       "把**库与示例**的编译告警当错误（CI 用，默认 OFF；test/ 不受此约束）" OFF)
 
 # ---------------------------------------------------------------------------
 # TLS（v0.91）：进程内 TLS 终结。
@@ -193,16 +194,16 @@ if(MSVC)
         # C4459: 符号遮蔽。Asio 1.30 的 resolver_service.hpp 内部存在此类代码；
         #   属第三方头问题，且实例化由我们触发，故定向抑制（而非放宽 /W4）。
         /MP                     # 并行编译
-        $<$<BOOL:${NETMECH_WARNINGS_AS_ERRORS}>:/WX>
     )
 else()
     target_compile_options(netmech_compile_options INTERFACE
         -Wall -Wextra
         -finput-charset=UTF-8
         -fexec-charset=UTF-8
-        $<$<BOOL:${NETMECH_WARNINGS_AS_ERRORS}>:-Werror>
     )
 endif()
+# 注意：`-Werror` / `/WX` **不在这里**。它是"库与示例"的策略，不是所有使用者的
+# 策略 —— 见下面"严格告警只作用于库与示例"一节。
 
 # 平台系统库
 if(WIN32)
@@ -291,6 +292,31 @@ endif()
 
 # 独立 Asio 是 header-only：无需链接任何第三方库。
 target_link_libraries(netmech PUBLIC netmech_compile_options)
+
+# ---------------------------------------------------------------------------
+# 严格告警（-Werror / /WX）**只作用于库本体与示例**，不作用于 test/
+# ---------------------------------------------------------------------------
+#  为什么要分开：
+#    · 库代码要上生产环境 → 必须零告警；
+#    · `example/` 会被使用者照着写 → 也必须零告警；
+#    · `test/` 的价值是"验证行为能过"，而第三方头在新版本里经常引入弃用警告
+#      （实例：OpenSSL 4.1 弃用 X509_check_host、4.x 把一批 getter 改成返回
+#      const），为了这些去反复改测试，只是拿精力跟工具链赛跑。
+#
+#  实现上**不能**把 /WX 挂在 `netmech_compile_options` 上：那是 PUBLIC
+#  interface，会顺着依赖一路传给测试、示例和下游使用者。这里改成按目标加。
+set(NETMECH_STRICT_WARNING_FLAGS "")
+if(NETMECH_WARNINGS_AS_ERRORS)
+    if(MSVC)
+        set(NETMECH_STRICT_WARNING_FLAGS /WX)
+    else()
+        set(NETMECH_STRICT_WARNING_FLAGS -Werror)
+    endif()
+endif()
+
+if(NOT NETMECH_IS_INTERFACE)
+    target_compile_options(netmech PRIVATE ${NETMECH_STRICT_WARNING_FLAGS})
+endif()
 
 # 导出给 netmechConfig.cmake.in 用（configure_package_config_file 会替换）。
 if(NETMECH_TLS)
@@ -401,12 +427,15 @@ if(NETMECH_BUILD_EXAMPLES)
         add_executable(netmech_echo example/echo_main.cpp)
         set_target_properties(netmech_echo PROPERTIES FOLDER "netmech/example")
         target_link_libraries(netmech_echo PRIVATE netmech)
+        # 示例会被使用者照着写 → 与库本体同一套严格告警
+        target_compile_options(netmech_echo PRIVATE ${NETMECH_STRICT_WARNING_FLAGS})
 
     # 串口自检（Windows 的 com0com / Linux 的 pty 都能用）
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/example/serial_check.cpp")
         add_executable(serial_check example/serial_check.cpp)
         set_target_properties(serial_check PROPERTIES FOLDER "netmech/example")
         target_link_libraries(serial_check PRIVATE netmech)
+        target_compile_options(serial_check PRIVATE ${NETMECH_STRICT_WARNING_FLAGS})
     endif()
     endif()
 
@@ -415,6 +444,7 @@ if(NETMECH_BUILD_EXAMPLES)
         add_executable(netmech_udp example/udp_echo_main.cpp)
         set_target_properties(netmech_udp PROPERTIES FOLDER "netmech/example")
         target_link_libraries(netmech_udp PRIVATE netmech)
+        target_compile_options(netmech_udp PRIVATE ${NETMECH_STRICT_WARNING_FLAGS})
     endif()
 endif()
 

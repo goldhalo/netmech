@@ -353,7 +353,7 @@ export QEMU_LD_PREFIX=/opt/gcc-arm-10.2-2020.11-x86_64-aarch64-none-linux-gnu/aa
 | `NETMECH_BUILD_TESTS` | ON | 编译单元测试 |
 | `NETMECH_BUILD_EXAMPLES` | ON | 编译 `echo` / `udp_echo` 示例 |
 | `NETMECH_BUILD_BENCH` | OFF | 编译 `bench/` 下的压测与长跑工具 |
-| `NETMECH_WARNINGS_AS_ERRORS` | OFF | 把警告当错误（CI 用） |
+| `NETMECH_WARNINGS_AS_ERRORS` | OFF | 把**库与示例**的警告当错误（CI 用）；`test/` 不受此约束 —— 用例能过就行 |
 
 ---
 

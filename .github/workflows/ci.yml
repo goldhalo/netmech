@@ -45,6 +45,7 @@ jobs:
           else
             export CC=clang CXX=clang++
           fi
+          # 注意：-Werror 只作用于**库与 example/**；test/ 不看告警，用例过即可
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
                 -DNETMECH_WARNINGS_AS_ERRORS=ON
