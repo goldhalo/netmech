@@ -1217,6 +1217,18 @@ std::shared_ptr<void> Conn::user_context() const noexcept
     return m_impl ? m_impl->user_context : std::shared_ptr<void>();
 }
 
+bool Conn::is_secure() const noexcept
+{
+    if (!m_impl || !m_impl->transport) {
+        return false;
+    }
+    try {
+        return m_impl->transport->is_secure();
+    } catch (...) {
+        return false;   // 契约：noexcept
+    }
+}
+
 std::string Conn::alpn_protocol() const noexcept
 {
     if (!m_impl || !m_impl->transport) {

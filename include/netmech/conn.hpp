@@ -113,6 +113,19 @@ public:
     /// @note 线程安全。
     [[nodiscard]] Address remote_address() const;
 
+    /// 这条连接是否是加密传输（进程内 TLS 终结）。
+    ///
+    /// @return `true` = TLS 已握手成功；`false` = 明文。
+    ///
+    /// @par 用途
+    /// 上层协议库据此决定 `X-Forwarded-Proto` / `https://` 之类的语义，
+    /// 例如 httpmech 用它填 `HttpRequest::is_secure_connection`。
+    ///
+    /// @note 只在握手成功后为 true：握手失败时业务根本拿不到 `Conn`
+    ///       （走 `on_accept_failed` / `on_linkfail`）。
+    /// @note 线程安全、noexcept。
+    [[nodiscard]] bool is_secure() const noexcept;
+
     /// TLS 协商出的应用层协议（ALPN），如 `"h2"` / `"http/1.1"`。
     ///
     /// @return 明文连接、未启用 ALPN、或双方没有共同协议 → **空串**。

@@ -15,6 +15,8 @@
 
 - `include/netmech/tls.hpp`：`TlsConfig` / `TlsVersion`。公共头仍然**不引**
   asio / OpenSSL，配置是纯 C++ 值类型。
+- `Conn::is_secure()`：连接本身是否 TLS（供上层库区分 HTTPS/HTTP，
+  如 httpmech 用它填 `HttpRequest::is_secure_connection`）。
 - **ALPN**：`TlsConfig::alpn = {"h2", "http/1.1"}`。服务端按自己的顺序挑第一个
   共同项（`SSL_select_next_proto` 语义），结果用 `Conn::alpn_protocol()` 读取
   （"h2" / "http/1.1" / 明文或未协商 → 空串）。双方没有共同协议时**握手仍然成功**，

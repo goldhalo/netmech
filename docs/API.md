@@ -209,7 +209,8 @@ Address local_address() const;                        // 关闭后返回缓存�
 Address remote_address() const;
 std::shared_ptr<void> user_context() const noexcept;  // listen/connect 时传入的
 
-// v0.91：TLS 协商出的应用层协议（ALPN）
+// v0.91：TLS 相关
+bool is_secure() const noexcept;                      // 连接本身是否 TLS
 std::string alpn_protocol() const noexcept;           // "h2" / "http/1.1" / ""（明文）
 ```
 
