@@ -208,7 +208,14 @@ std::uint64_t id() const noexcept;                    // 进程内唯一，不�
 Address local_address() const;                        // 关闭后返回缓存值
 Address remote_address() const;
 std::shared_ptr<void> user_context() const noexcept;  // listen/connect 时传入的
+
+// v0.91：TLS 协商出的应用层协议（ALPN）
+std::string alpn_protocol() const noexcept;           // "h2" / "http/1.1" / ""（明文）
 ```
+
+`alpn_protocol()` 的取值时机：握手下完成时快照，`on_accept` / `on_linkup` 里
+一定可读；明文连接、未配 ALPN、或双方没有共同协议 → **空串**（不会失败）。
+典型用途是在 `on_accept` 里据此选 h2 还是 h1.1 的 handler。
 
 #### 读
 

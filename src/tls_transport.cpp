@@ -106,6 +106,37 @@ std::shared_ptr<TlsContext> TlsContext::create(const TlsConfig& cfg,
         return std::shared_ptr<TlsContext>();
     }
 
+    // ---- ALPN ----
+    // 线上格式是 `[len][name][len][name]...`（每项 1..255 字节，已在
+    // validate_tls_config 里校验）。服务端注册选择回调，客户端设置候选列表。
+    if (!cfg.alpn.empty()) {
+        auto build_wire = [](const std::vector<std::string>& protos,
+                             std::vector<unsigned char>& out) {
+            out.clear();
+            for (const std::string& p : protos) {
+                out.push_back(static_cast<unsigned char>(p.size()));
+                out.insert(out.end(), p.begin(), p.end());
+            }
+        };
+        build_wire(cfg.alpn, self->alpn_server_wire_);
+        build_wire(cfg.alpn, self->alpn_client_wire_);
+
+        if (server) {
+            // 回调的 arg 指向本 TlsContext：它被监听器与所有连接共享，
+            // 生命周期覆盖整个 SSL_CTX，因此回调里的指针始终有效。
+            SSL_CTX_set_alpn_select_cb(raw, &TlsContext::alpn_select_cb, self.get());
+        } else if (self->alpn_client_wire_.size() <=
+                   static_cast<std::size_t>(std::numeric_limits<unsigned int>::max())) {
+            const int rc = SSL_CTX_set_alpn_protos(
+                raw, self->alpn_client_wire_.data(),
+                static_cast<unsigned int>(self->alpn_client_wire_.size()));
+            if (rc != 0) {
+                ec = make_boost_error_code(NetErrc::invalid_argument);
+                return std::shared_ptr<TlsContext>();
+            }
+        }
+    }
+
     // 服务端：设置 session id context，否则会话复用（含 TLS1.3 ticket）不可用。
     if (server) {
         static const unsigned char sid_ctx[] = {'n', 'e', 't', 'm', 'e', 'c', 'h'};
@@ -174,6 +205,50 @@ std::shared_ptr<TlsContext> TlsContext::create(const TlsConfig& cfg,
 std::uint32_t TlsContext::handshake_timeout_ms() const noexcept
 {
     return cfg_.handshake_timeout_ms == 0 ? 10000u : cfg_.handshake_timeout_ms;
+}
+
+std::string TlsContext::peer_alpn(SSL* ssl)
+{
+    if (ssl == nullptr) {
+        return std::string();
+    }
+    const unsigned char* data = nullptr;
+    unsigned int         len  = 0;
+    ::SSL_get0_alpn_selected(ssl, &data, &len);
+    if (data == nullptr || len == 0) {
+        return std::string();
+    }
+    return std::string(reinterpret_cast<const char*>(data), len);
+}
+
+int TlsContext::alpn_select_cb(SSL* /*ssl*/, const unsigned char** out,
+                               unsigned char* outlen, const unsigned char* in,
+                               unsigned int inlen, void* arg)
+{
+    auto* self = static_cast<TlsContext*>(arg);
+    if (self == nullptr || self->alpn_server_wire_.empty()) {
+        return SSL_TLSEXT_ERR_NOACK;
+    }
+
+    // 按**服务端**顺序挑（SSL_select_next_proto 的语义就是"server 优先"）。
+    unsigned char* chosen     = nullptr;
+    unsigned char  chosen_len = 0;
+    const int      rc         = ::SSL_select_next_proto(
+        &chosen, &chosen_len,
+        self->alpn_server_wire_.data(),
+        static_cast<unsigned int>(self->alpn_server_wire_.size()),
+        in, inlen);
+
+    if (rc != OPENSSL_NPN_NEGOTIATED || chosen == nullptr || chosen_len == 0) {
+        // 没有共同协议：**不中止握手**，只是协商结果为空。
+        // "必须 h2" 是业务策略，由 on_accept/on_linkup 里自己判断并 close()。
+        return SSL_TLSEXT_ERR_NOACK;
+    }
+
+    // 指针指向 alpn_server_wire_（TlsContext 成员，生命周期覆盖整个 SSL_CTX）。
+    *out    = chosen;
+    *outlen = chosen_len;
+    return SSL_TLSEXT_ERR_OK;
 }
 
 std::string TlsContext::peer_fingerprint(SSL* ssl)
@@ -294,6 +369,9 @@ public:
                 }
                 handshaken_ = true;
                 peer_fingerprint_ = TlsContext::peer_fingerprint(raw);
+                // ALPN 结果只在握手结束那一刻有效，这里取一次存下来：
+                // 之后 Conn::alpn_protocol() 可以在任意线程读，不必再碰 SSL*。
+                alpn_ = TlsContext::peer_alpn(raw);
                 // 握手成功之后再做 pin / 主机名校验：失败时业务还没拿到 Conn。
                 handler(ctx->verify_peer(raw));
             });
@@ -393,6 +471,11 @@ public:
         return peer_fingerprint_;
     }
 
+    [[nodiscard]] std::string negotiated_protocol() const override
+    {
+        return alpn_;
+    }
+
 private:
     // ★ 声明顺序：ctx_ 必须在 ssl_ **之前** —— ssl::stream 析构时需要
     //   SSL_CTX 仍然有效（反向析构 = 先释放 CTX 再析构 stream，UB）。
@@ -400,6 +483,7 @@ private:
     asio::ssl::stream<socket_t> ssl_;
     bool                        handshaken_ = false;
     std::string                 peer_fingerprint_;
+    std::string                 alpn_;   ///< 握手协商出的协议（空 = 未协商）
 };
 
 } // namespace

@@ -15,6 +15,10 @@
 
 - `include/netmech/tls.hpp`：`TlsConfig` / `TlsVersion`。公共头仍然**不引**
   asio / OpenSSL，配置是纯 C++ 值类型。
+- **ALPN**：`TlsConfig::alpn = {"h2", "http/1.1"}`。服务端按自己的顺序挑第一个
+  共同项（`SSL_select_next_proto` 语义），结果用 `Conn::alpn_protocol()` 读取
+  （"h2" / "http/1.1" / 明文或未协商 → 空串）。双方没有共同协议时**握手仍然成功**，
+  "必须 h2" 由业务在 `on_accept` 里自行判断。
 - `Mechanism::listen(addr, linkable, ListenOptions)` /
   `Mechanism::connect(addr, linkable, ConnectOptions)`：`options.tls` 有值即启用 TLS。
   旧的位置参数重载**完全不变**，既有调用点零改动。

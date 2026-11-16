@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 // 本头**不引 asio**：对外只暴露 netmech::Address，asio 的 endpoint 不出现在接口上。
 
@@ -111,6 +112,23 @@ public:
     /// @return 远端 tcp::endpoint。语义同 local_address()。
     /// @note 线程安全。
     [[nodiscard]] Address remote_address() const;
+
+    /// TLS 协商出的应用层协议（ALPN），如 `"h2"` / `"http/1.1"`。
+    ///
+    /// @return 明文连接、未启用 ALPN、或双方没有共同协议 → **空串**。
+    ///
+    /// @par 典型用法（协议分发）
+    /// @code
+    ///   std::shared_ptr<ConnHandler> on_accept(Conn& c) override {
+    ///       if (c.alpn_protocol() == "h2") return std::make_shared<H2Session>();
+    ///       return std::make_shared<Http1Session>();     // 空串也走这里
+    ///   }
+    /// @endcode
+    ///
+    /// @note 只在握手成功之后才有值，而 `on_accept` / `on_linkup` 正是在
+    ///       握手之后触发，所以回调里一定能读到正确结果。
+    /// @note 线程安全、noexcept（值在握手完成时快照，之后只读）。
+    [[nodiscard]] std::string alpn_protocol() const noexcept;
 
     /// 创建这条连接时传入的用户上下文，原样返回（可为空）。
     ///

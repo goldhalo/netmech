@@ -127,6 +127,13 @@ public:
     ///
     /// @return 非 TLS 返回空串；TLS 但未取到证书（例如握手未完成）也返回空串。
     [[nodiscard]] virtual std::string peer_certificate_sha256() const { return std::string(); }
+
+    /// ALPN 协商出的应用层协议（如 `"h2"`、`"http/1.1"`）。
+    ///
+    /// @return 明文传输、未启用 ALPN、或双方没有共同协议时返回空串。
+    /// @note 只在握手成功后才有值；实现里在握手完成时取一次快照，
+    ///       之后任意线程读都是只读的，不需要加锁。
+    [[nodiscard]] virtual std::string negotiated_protocol() const { return std::string(); }
 };
 
 /// 传输对象的唯一所有权句柄。

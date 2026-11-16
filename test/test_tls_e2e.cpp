@@ -448,6 +448,151 @@ NETMECH_TEST(tls_e2e_plain_peer_rejected)
     server->close_all();
 }
 
+// ---------------------------------------------------------------------------
+// 4/5/6. ALPN（应用层协议协商）
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 起一对 TLS 客户端/服务端（自签 + pin），等双方都完成接管。
+struct AlpnPair {
+    std::shared_ptr<netmech::Mechanism> server;
+    std::shared_ptr<netmech::Mechanism> client;
+    std::shared_ptr<TlsTestLinkable>    srv;
+    std::shared_ptr<TlsTestLinkable>    cli;
+};
+
+bool bring_up(const TestCert& cert,
+              std::vector<std::string> srv_alpn,
+              std::vector<std::string> cli_alpn,
+              AlpnPair& p)
+{
+    p.server = netmech::Mechanism::create();
+    p.client = netmech::Mechanism::create();
+    if (!p.server || !p.client) {
+        return false;
+    }
+    p.srv = std::make_shared<TlsTestLinkable>();
+    p.cli = std::make_shared<TlsTestLinkable>();
+
+    netmech::TlsConfig srv_tls;
+    srv_tls.cert_chain_file  = cert.cert_path;
+    srv_tls.private_key_file = cert.key_path;
+    srv_tls.alpn             = std::move(srv_alpn);
+
+    netmech::ListenOptions lo;
+    lo.tls = srv_tls;
+
+    const netmech::Address req{"127.0.0.1", 0};
+    if (p.server->listen(req, p.srv, lo)) {
+        return false;
+    }
+    const auto bound = p.server->listening_address(req);
+    if (!bound.has_value()) {
+        return false;
+    }
+
+    netmech::TlsConfig cli_tls;
+    cli_tls.pinned_sha256 = cert.fingerprint;
+    cli_tls.server_name   = "netmech-test";
+    cli_tls.alpn          = std::move(cli_alpn);
+
+    netmech::ConnectOptions co;
+    co.tls = cli_tls;
+    if (p.client->connect(*bound, p.cli, co)) {
+        return false;
+    }
+
+    return netmech_test::wait_for(
+        [&] { return p.cli->linkup.load() >= 1 && p.srv->accepted.load() >= 1; });
+}
+
+std::string alpn_of(const std::shared_ptr<TlsTestLinkable>& lb)
+{
+    auto ep = lb->first_endpoint();
+    return ep ? ep->alpn_protocol() : std::string("<no-endpoint>");
+}
+
+} // namespace
+
+NETMECH_TEST(tls_e2e_alpn_both_sides_see_h2)
+{
+    TestCert cert = make_self_signed();
+    REQUIRE(cert.ok);
+
+    AlpnPair p;
+    REQUIRE(bring_up(cert, {"h2", "http/1.1"}, {"h2", "http/1.1"}, p));
+
+    // 两侧都必须在 on_accept / on_linkup 之后读到同一个结果。
+    CHECK_EQ(alpn_of(p.cli), std::string("h2"));
+    CHECK_EQ(alpn_of(p.srv), std::string("h2"));
+
+    p.client->close_all();
+    p.server->close_all();
+}
+
+NETMECH_TEST(tls_e2e_alpn_server_preference_wins)
+{
+    TestCert cert = make_self_signed();
+    REQUIRE(cert.ok);
+
+    // 服务端把 http/1.1 排在前面 → 即使客户端首选 h2，也应当选 http/1.1。
+    AlpnPair p;
+    REQUIRE(bring_up(cert, {"http/1.1", "h2"}, {"h2", "http/1.1"}, p));
+
+    CHECK_EQ(alpn_of(p.cli), std::string("http/1.1"));
+    CHECK_EQ(alpn_of(p.srv), std::string("http/1.1"));
+
+    p.client->close_all();
+    p.server->close_all();
+}
+
+NETMECH_TEST(tls_e2e_alpn_no_overlap_still_connects)
+{
+    TestCert cert = make_self_signed();
+    REQUIRE(cert.ok);
+
+    // 双方没有共同协议：**握手仍然成功**，只是协商结果为空。
+    // "必须 h2" 由业务在 on_accept 里自己判断并 close()。
+    AlpnPair p;
+    REQUIRE(bring_up(cert, {"h2"}, {"acme-proto"}, p));
+
+    CHECK(alpn_of(p.cli).empty());
+    CHECK(alpn_of(p.srv).empty());
+    CHECK_EQ(p.cli->linkfail.load(), 0);
+    CHECK_EQ(p.srv->accept_failed.load(), 0);
+
+    p.client->close_all();
+    p.server->close_all();
+}
+
+NETMECH_TEST(tls_e2e_plain_connection_has_no_alpn)
+{
+    // 明文连接：alpn_protocol() 恒为空串（调用方据此可统一走 h1 分支）。
+    auto server = netmech::Mechanism::create();
+    auto client = netmech::Mechanism::create();
+    REQUIRE(server != nullptr);
+    REQUIRE(client != nullptr);
+
+    auto srv_lb = std::make_shared<TlsTestLinkable>();
+    auto cli_lb = std::make_shared<TlsTestLinkable>();
+
+    const netmech::Address req{"127.0.0.1", 0};
+    EXPECT_OK(server->listen(req, srv_lb, 8));
+    const auto bound = server->listening_address(req);
+    REQUIRE(bound.has_value());
+
+    EXPECT_OK(client->connect(*bound, cli_lb));
+    REQUIRE(netmech_test::wait_for(
+        [&] { return cli_lb->linkup.load() >= 1 && srv_lb->accepted.load() >= 1; }));
+
+    CHECK(alpn_of(cli_lb).empty());
+    CHECK(alpn_of(srv_lb).empty());
+
+    client->close_all();
+    server->close_all();
+}
+
 #else // NETMECH_HAS_TLS
 
 NETMECH_TEST(tls_e2e_requires_tls_build)

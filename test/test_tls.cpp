@@ -151,6 +151,38 @@ NETMECH_TEST(tls_connect_rejects_bad_fingerprint)
 }
 
 // ---------------------------------------------------------------------------
+// 4.5 ALPN 条目非法（空 / 超 255 字节）→ invalid_argument
+// ---------------------------------------------------------------------------
+NETMECH_TEST(tls_rejects_bad_alpn_entries)
+{
+    auto mech = Mechanism::create();
+    REQUIRE(mech != nullptr);
+
+    auto lb = std::make_shared<Linkable>();
+
+    {
+        TlsConfig cfg = server_config();
+        cfg.alpn = {""};   // ALPN 线上格式用 1 字节表示长度，空串无意义
+        ListenOptions opts;
+        opts.tls = cfg;
+        const std::error_code ec = mech->listen(Address{"127.0.0.1", 0}, lb, opts);
+        CHECK_MSG(is_errc(ec, NetErrc::invalid_argument),
+                  "空 ALPN 协议名应报 invalid_argument，实际: " + ec.message());
+    }
+    {
+        TlsConfig cfg = client_config();
+        cfg.alpn = {std::string(256, 'x')};   // 长度上限 255
+        ConnectOptions opts;
+        opts.tls = cfg;
+        const std::error_code ec = mech->connect(Address{"127.0.0.1", 1}, lb, opts);
+        CHECK_MSG(is_errc(ec, NetErrc::invalid_argument),
+                  "超长 ALPN 协议名应报 invalid_argument，实际: " + ec.message());
+    }
+
+    CHECK(mech->listening_addresses().empty());
+}
+
+// ---------------------------------------------------------------------------
 // 5. 未编译 TLS 的构建：合法配置也必须明确报"不支持"
 // ---------------------------------------------------------------------------
 NETMECH_TEST(tls_reports_unsupported_when_not_built)

@@ -64,6 +64,14 @@ error_code_t validate_tls_config(const TlsConfig& cfg, bool server)
         }
     }
 
+    // ALPN：线上格式用**一个字节**表示长度，所以每项必须是 1..255。
+    // 空串在握手时才暴露（表现为协商不出东西），不如在受理阶段就拒掉。
+    for (const std::string& proto : cfg.alpn) {
+        if (proto.empty() || proto.size() > 255) {
+            return make_boost_error_code(NetErrc::invalid_argument);
+        }
+    }
+
     if (server) {
         // 服务端没有证书/私钥就无法完成握手 —— 在 listen() 时就说清楚，
         // 而不是等第一个连接来了才通过 on_accept_failed 报出来。

@@ -163,6 +163,8 @@ mech->connect(Address{"10.0.0.5", 8443}, link, co);
    不允许"以为加密了其实谁都能中间人"。默认走**自签 + 指纹 pin**。
 3. **`close_notify` 是尽力而为**（`close()` 同步、不阻塞）；反过来，收到不带
    `close_notify` 的 EOF 会映射成 `NetErrc::tls_truncated`，不会静默当普通 EOF。
+4. **ALPN 协商结果**在 `Conn::alpn_protocol()` 里（`"h2"` / `"http/1.1"` / 明文为空串），
+   在 `on_accept` / `on_linkup` 里可直接据此选 handler —— 协议本身（h2 帧/流）不在本库。
 
 构建：**默认不编** TLS（零第三方依赖）；显式 `-DNETMECH_TLS=ON` 才编，
 **OpenSSL 必须由你先装好**（Windows / Linux 行为一致），缺了直接报错：

@@ -40,6 +40,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace netmech {
 
@@ -131,6 +132,33 @@ struct TlsConfig {
     /// @note netmech 的 `Address` **不含域名**（不做 DNS 解析），因此 SNI
     ///       必须在这里单独给。服务端会忽略本字段。
     std::string server_name;
+
+    // -------------------------------------------------------------------------
+    // 应用层协议协商（ALPN）
+    // -------------------------------------------------------------------------
+
+    /// ALPN 候选协议，按**优先级从高到低**排列（如 `{"h2", "http/1.1"}`）。
+    ///
+    /// - **客户端**：整个列表发给服务端，由服务端挑一个；
+    /// - **服务端**：从客户端列表里按**本列表顺序**挑第一个共同项；
+    /// - 空：不发起 / 不接受 ALPN。
+    ///
+    /// 协商结果在握手完成后通过 `Conn::alpn_protocol()`（客户端与服务端都能读）
+    /// 取回，典型用法是在 `on_accept` / `on_linkup` 里据此决定走 h2 还是 h1.1：
+    ///
+    /// @code
+    ///   std::shared_ptr<ConnHandler> on_accept(Conn& c) override {
+    ///       if (c.alpn_protocol() == "h2") return std::make_shared<H2Session>();
+    ///       return std::make_shared<Http1Session>();
+    ///   }
+    /// @endcode
+    ///
+    /// @note 双方**没有共同协议时握手仍然成功**，只是结果为空串。
+    ///       本库不替你拒绝 —— "必须 h2" 属于业务策略，请自行 `c.close()`。
+    /// @note 每一项长度必须在 1..255 字节（ALPN 线上格式用一个字节表示长度），
+    ///       否则 `listen()` / `connect()` 返回 `invalid_argument`。
+    /// @note h2 over TLS 需要它；h2c（明文 h2 / prior knowledge）不需要。
+    std::vector<std::string> alpn;
 
     /// 协议版本下限，默认 TLS 1.2。
     ///

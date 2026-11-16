@@ -13,7 +13,8 @@
 | 版本 | TLS 1.2 / 1.3（SSLv3、TLS1.0、TLS1.1 **无法启用**） |
 | 信任模型 | **自签 + 指纹 pin** 优先；也支持 CA 证书链校验 |
 | 传输 | 只做 **TLS over TCP** |
-| 不做 | DTLS（UDP）、ALPN、客户端会话缓存、证书热加载 |
+| 做 | 自签 + 指纹 pin、CA 链校验、SNI、**ALPN**（h2 / http1.1 协商） |
+| 不做 | DTLS（UDP）、客户端会话缓存（session cache/ticket 跨进程复用）、证书热加载 |
 
 **为什么现在做**：0.90 之前 `Conn` 直接持有 `asio::ip::tcp::socket`，读写关闭
 全直达 socket，外部没有任何接缝能插入 TLS。v0.91 先抽出内部的
@@ -228,7 +229,49 @@ tls.server_name = "device.local";   // 同时做主机名校验
 
 ---
 
-## 5. 握手语义（重要）
+## 5. ALPN（h2 / http1.1 协商）
+
+TLS 建好之后，"这条连接上跑 h2 还是 h1.1"由 **ALPN** 决定。netmech 只负责
+协商并把结果告诉你，**协议本身（帧、流）不在这一层**。
+
+```cpp
+// 服务端：按优先级从高到低给候选
+TlsConfig srv;
+srv.cert_chain_file  = "server.crt";
+srv.private_key_file = "server.key";
+srv.alpn             = {"h2", "http/1.1"};
+// ListenOptions{ tls = srv }
+
+// 客户端：同样给候选（顺序 = 客户端偏好，但**服务端偏好优先**）
+TlsConfig cli;
+cli.pinned_sha256 = "...";
+cli.alpn          = {"h2", "http/1.1"};
+```
+
+握手完成后按协商结果分发：
+
+```cpp
+std::shared_ptr<ConnHandler> on_accept(Conn& c) override {
+    const std::string proto = c.alpn_protocol();   // "h2" / "http/1.1" / ""
+    if (proto == "h2")       return std::make_shared<H2Session>();
+    if (proto.empty())       c.close();            // 业务要求"必须 h2"
+    return std::make_shared<Http1Session>();
+}
+```
+
+语义（都是刻意的）：
+
+| 情况 | 行为 |
+|---|---|
+| 双方有共同协议 | 按**服务端** `alpn` 列表的顺序取第一个共同项 |
+| 没有共同协议 | 握手**仍然成功**，`alpn_protocol()` 返回空串 —— 本库不替你拒绝，"必须 h2" 属于业务策略 |
+| 明文连接 / 一方未配置 ALPN | 空串 |
+| 协议名长度 | 每项必须 1..255 字节，否则 `listen()`/`connect()` 返回 `invalid_argument` |
+| 读取时机 | `on_accept` / `on_linkup` 里一定可读（握手已完成）；线程安全、noexcept |
+
+@note h2c（明文 h2 / prior knowledge）不需要 ALPN；它靠"连上就发 preface"约定。
+
+## 6. 握手语义（重要）
 
 * **`on_accept` / `on_linkup` 发生在握手成功之后**。业务拿到 `Conn` 时 TLS 已经
   建立，`read()` 直接就是明文。
@@ -244,7 +287,7 @@ tls.server_name = "device.local";   // 同时做主机名校验
 
 ---
 
-## 6. 关闭语义与已知取舍
+## 7. 关闭语义与已知取舍
 
 | 场景 | 行为 |
 |---|---|
@@ -260,7 +303,7 @@ OpenSSL `SSL` + BIO 开销。几百条连接的管理机要实测。
 
 ---
 
-## 7. 手工验证（双机 / 本机回环）
+## 8. 手工验证（双机 / 本机回环）
 
 ```bash
 # 1) 生成自签证书（默认 EC P-256，比 RSA 快很多）
@@ -285,10 +328,9 @@ openssl x509 -in server.crt -noout -fingerprint -sha256
 
 ---
 
-## 8. 还没做的（后续）
+## 9. 还没做的（后续）
 
-* ALPN（HTTP/2、`h2` 协商）；
-* 客户端会话缓存 / 恢复（降低重复握手成本）；
+* 客户端会话缓存 / 恢复（降低重复握手成本；服务端 session id context 已就绪）；
 * 证书热加载（现在换证书要重新 `listen`）；
 * mbedTLS / BearSSL 后端（抽象层已就位，`Transport` 再加一个实现即可）；
 * DTLS（UDP）。

@@ -1217,6 +1217,20 @@ std::shared_ptr<void> Conn::user_context() const noexcept
     return m_impl ? m_impl->user_context : std::shared_ptr<void>();
 }
 
+std::string Conn::alpn_protocol() const noexcept
+{
+    if (!m_impl || !m_impl->transport) {
+        return std::string();
+    }
+    try {
+        // transport 里存的是握手下完成时的快照（std::string），只读、无锁。
+        return m_impl->transport->negotiated_protocol();
+    } catch (...) {
+        // 契约要求 noexcept：取不到就当"没协商"。
+        return std::string();
+    }
+}
+
 bool Conn::read(Buf buf, ReadMode mode)
 {
     if (!m_impl) {

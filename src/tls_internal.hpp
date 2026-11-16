@@ -114,6 +114,19 @@ public:
     /// 从已完成的 SSL 连接取对端叶子证书的 SHA-256（小写 hex，无分隔符）。
     [[nodiscard]] static std::string peer_fingerprint(SSL* ssl);
 
+    /// 从已完成的 SSL 连接取**协商出的** ALPN 协议名（空 = 未协商）。
+    ///
+    /// @note 握手失败/未协商都返回空串，由 `Conn::alpn_protocol()` 转给业务。
+    [[nodiscard]] static std::string peer_alpn(SSL* ssl);
+
+    /// 服务端 ALPN 选择回调（`SSL_CTX_set_alpn_select_cb`）。
+    ///
+    /// @note 按**服务端**配置顺序挑第一个共同项（不是客户端顺序）。
+    /// @note 没有共同项时返回 `SSL_TLSEXT_ERR_NOACK`：握手继续，
+    ///       协商结果为空 —— "必须 h2" 由业务自己判断。
+    static int alpn_select_cb(SSL* ssl, const unsigned char** out, unsigned char* outlen,
+                              const unsigned char* in, unsigned int inlen, void* arg);
+
 private:
     TlsContext(const TlsConfig& cfg, bool server)
         : cfg_(cfg)
@@ -125,6 +138,15 @@ private:
     TlsConfig               cfg_;
     bool                    server_;
     asio::ssl::context      ctx_;
+
+    /// ALPN 候选的**线上格式**（`[len][name]...`）。
+    ///
+    /// 为什么要留成成员：服务端选择回调返回的指针必须一直有效到握手结束
+    /// （OpenSSL 只在回调里给出指针，不拷贝），指向的正是这份缓冲。
+    /// 客户端也用同一份调 `SSL_CTX_set_alpn_protos`（该函数内部会拷贝，
+    /// 这里保留引用只是为了让两个方向的处理长得一样）。
+    std::vector<unsigned char> alpn_server_wire_;
+    std::vector<unsigned char> alpn_client_wire_;
 };
 
 /// 用一条**已连接**的 TCP socket 构造 TLS 传输（接管所有权，并接管 ctx 引用）。
